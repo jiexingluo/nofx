@@ -115,8 +115,17 @@ func (at *AutoTrader) checkPositionDrawdown() {
 			drawdownPct = ((peakPnLPct - currentPnLPct) / peakPnLPct) * 100
 		}
 
-		// Check close position condition: price move > +5% and drawdown >= 40%
-		if shouldDrawdownClose(pricePnLPct, drawdownPct) {
+		minProfit, maxDrawdown := drawdownClosePriceGainPct, drawdownCloseGivebackPct
+		if at.config.StrategyConfig != nil {
+			if configured := at.config.StrategyConfig.RiskControl.DrawdownMinProfit; configured > 0 {
+				minProfit = configured
+			}
+			if configured := at.config.StrategyConfig.RiskControl.DrawdownMaxDrawdown; configured > 0 {
+				maxDrawdown = configured
+			}
+		}
+
+		if pricePnLPct > minProfit && drawdownPct >= maxDrawdown {
 			logger.Infof("🚨 Drawdown close position condition triggered: %s %s | Price move: %.2f%% | Current profit: %.2f%% | Peak profit: %.2f%% | Drawdown: %.2f%%",
 				symbol, side, pricePnLPct, currentPnLPct, peakPnLPct, drawdownPct)
 
@@ -128,7 +137,7 @@ func (at *AutoTrader) checkPositionDrawdown() {
 				// Clear cache for this position after closing
 				at.ClearPeakPnLCache(symbol, side)
 			}
-		} else if pricePnLPct > drawdownClosePriceGainPct {
+		} else if pricePnLPct > minProfit {
 			// Record situations close to close position condition (for debugging)
 			logger.Infof("📊 Drawdown monitoring: %s %s | Price move: %.2f%% | Profit: %.2f%% | Peak: %.2f%% | Drawdown: %.2f%%",
 				symbol, side, pricePnLPct, currentPnLPct, peakPnLPct, drawdownPct)

@@ -14,6 +14,7 @@ const (
 )
 
 // GetKlinesRange fetches K-line series within specified time range (closed interval), returns data sorted by time in ascending order.
+// Uses a local file cache to avoid redundant API calls and support offline backtesting.
 func GetKlinesRange(symbol string, timeframe string, start, end time.Time) ([]Kline, error) {
 	symbol = Normalize(symbol)
 	normTF, err := NormalizeTimeframe(timeframe)
@@ -27,6 +28,35 @@ func GetKlinesRange(symbol string, timeframe string, start, end time.Time) ([]Kl
 	startMs := start.UnixMilli()
 	endMs := end.UnixMilli()
 
+	// Try cache first
+	klineCacheMu.Lock()
+	cached, _ := loadKlineCache(symbol, normTF)
+	klineCacheMu.Unlock()
+
+	if result, covered := filterKlinesFromCache(cached, startMs, endMs); covered {
+		return result, nil
+	}
+
+	// Fetch from API
+	all, apiErr := fetchKlinesFromAPI(symbol, normTF, startMs, endMs)
+	if apiErr != nil {
+		// If API fails but we have partial cache, return what we have
+		if result, _ := filterKlinesFromCache(cached, startMs, endMs); len(result) > 0 {
+			return result, nil
+		}
+		return nil, apiErr
+	}
+
+	// Save to cache
+	klineCacheMu.Lock()
+	saveKlineCache(symbol, normTF, all)
+	klineCacheMu.Unlock()
+
+	return all, nil
+}
+
+// fetchKlinesFromAPI fetches klines directly from Binance API.
+func fetchKlinesFromAPI(symbol, normTF string, startMs, endMs int64) ([]Kline, error) {
 	var all []Kline
 	cursor := startMs
 

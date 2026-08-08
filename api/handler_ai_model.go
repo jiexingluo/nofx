@@ -69,6 +69,7 @@ func (s *Server) handleGetModelConfigs(c *gin.Context) {
 		logger.Infof("⚠️ No AI models in database, returning defaults")
 		defaultModels := []SafeModelConfig{
 			{ID: "claw402", Name: "Claw402 (Base USDC)", Provider: "claw402", Enabled: false, HasAPIKey: false},
+			{ID: "siliconflow", Name: "SiliconFlow", Provider: "siliconflow", Enabled: false, HasAPIKey: false},
 		}
 		c.JSON(http.StatusOK, defaultModels)
 		return
@@ -110,6 +111,7 @@ func (s *Server) handleGetModelConfigs(c *gin.Context) {
 		logger.Infof("⚠️ No visible AI models in database, returning defaults")
 		defaultModels := []SafeModelConfig{
 			{ID: "claw402", Name: "Claw402 (Base USDC)", Provider: "claw402", Enabled: false, HasAPIKey: false},
+			{ID: "siliconflow", Name: "SiliconFlow", Provider: "siliconflow", Enabled: false, HasAPIKey: false},
 		}
 		c.JSON(http.StatusOK, defaultModels)
 		return
@@ -245,6 +247,7 @@ func (s *Server) handleGetSupportedModels(c *gin.Context) {
 	// Return static list of supported AI models with default versions
 	supportedModels := []map[string]interface{}{
 		{"id": "claw402", "name": "Claw402 (Base USDC)", "provider": "claw402", "defaultModel": "gpt-5.6"},
+		{"id": "siliconflow", "name": "SiliconFlow", "provider": "siliconflow", "defaultModel": "Qwen/Qwen3-8B"},
 	}
 
 	c.JSON(http.StatusOK, supportedModels)

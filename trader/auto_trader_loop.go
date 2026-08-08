@@ -747,6 +747,25 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 		}
 	}
 
+	sentimentCfg := strategyConfig.SentimentConfig
+	if sentimentCfg.EnableFearGreedIndex || sentimentCfg.EnableCryptoRacle {
+		ctx.SentimentData = market.FetchSentiment(
+			sentimentCfg.EnableFearGreedIndex,
+			sentimentCfg.EnableCryptoRacle,
+			sentimentCfg.CryptoRacleAPIKey,
+			sentimentCfg.CryptoRacleEndpoints,
+		)
+	}
+	if strategyConfig.DecisionWeights.ValuationWeight > 0 {
+		if valuationData, err := market.FetchValuationData(); err == nil {
+			ctx.ValuationData = valuationData
+		} else {
+			at.logWarnf("Failed to fetch market valuation data: %v", err)
+		}
+	}
+	weights := strategyConfig.DecisionWeights
+	ctx.DecisionWeights = &weights
+
 	return ctx, nil
 }
 

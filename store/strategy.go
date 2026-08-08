@@ -619,11 +619,13 @@ type StrategyConfig struct {
 	Language string `json:"language,omitempty"`
 	// AI trading configuration fields are kept on the Go struct for engine
 	// compatibility, but JSON persistence nests them under ai_config.
-	CoinSource     CoinSourceConfig     `json:"-"`
-	Indicators     IndicatorConfig      `json:"-"`
-	CustomPrompt   string               `json:"-"`
-	RiskControl    RiskControlConfig    `json:"-"`
-	PromptSections PromptSectionsConfig `json:"-"`
+	CoinSource      CoinSourceConfig        `json:"-"`
+	Indicators      IndicatorConfig         `json:"-"`
+	CustomPrompt    string                  `json:"-"`
+	RiskControl     RiskControlConfig       `json:"-"`
+	PromptSections  PromptSectionsConfig    `json:"-"`
+	DecisionWeights DecisionWeightsConfig   `json:"-"`
+	SentimentConfig SentimentAnalysisConfig `json:"-"`
 
 	// Grid trading configuration (only used when StrategyType == "grid_trading")
 	GridConfig *GridStrategyConfig `json:"grid_config,omitempty"`
@@ -636,11 +638,27 @@ type StrategyConfig struct {
 
 // AIStrategyConfig contains fields only used by AI trading strategies.
 type AIStrategyConfig struct {
-	CoinSource     CoinSourceConfig     `json:"coin_source"`
-	Indicators     IndicatorConfig      `json:"indicators"`
-	CustomPrompt   string               `json:"custom_prompt,omitempty"`
-	RiskControl    RiskControlConfig    `json:"risk_control"`
-	PromptSections PromptSectionsConfig `json:"prompt_sections,omitempty"`
+	CoinSource      CoinSourceConfig        `json:"coin_source"`
+	Indicators      IndicatorConfig         `json:"indicators"`
+	CustomPrompt    string                  `json:"custom_prompt,omitempty"`
+	RiskControl     RiskControlConfig       `json:"risk_control"`
+	PromptSections  PromptSectionsConfig    `json:"prompt_sections,omitempty"`
+	DecisionWeights DecisionWeightsConfig   `json:"decision_weights"`
+	SentimentConfig SentimentAnalysisConfig `json:"sentiment_config,omitempty"`
+}
+
+type DecisionWeightsConfig struct {
+	TechnicalWeight   int `json:"technical_weight"`
+	SentimentWeight   int `json:"sentiment_weight"`
+	ValuationWeight   int `json:"valuation_weight"`
+	FundamentalWeight int `json:"fundamental_weight"`
+}
+
+type SentimentAnalysisConfig struct {
+	EnableFearGreedIndex bool     `json:"enable_fear_greed_index"`
+	EnableCryptoRacle    bool     `json:"enable_cryptoracle"`
+	CryptoRacleAPIKey    string   `json:"cryptoracle_api_key,omitempty"`
+	CryptoRacleEndpoints []string `json:"cryptoracle_endpoints,omitempty"`
 }
 
 // PublishStrategyConfig contains settings shared by all strategy types.
@@ -673,11 +691,13 @@ func (c StrategyConfig) MarshalJSON() ([]byte, error) {
 		out.GridConfig = c.GridConfig
 	} else {
 		out.AIConfig = &AIStrategyConfig{
-			CoinSource:     c.CoinSource,
-			Indicators:     c.Indicators,
-			CustomPrompt:   c.CustomPrompt,
-			RiskControl:    c.RiskControl,
-			PromptSections: c.PromptSections,
+			CoinSource:      c.CoinSource,
+			Indicators:      c.Indicators,
+			CustomPrompt:    c.CustomPrompt,
+			RiskControl:     c.RiskControl,
+			PromptSections:  c.PromptSections,
+			DecisionWeights: c.DecisionWeights,
+			SentimentConfig: c.SentimentConfig,
 		}
 	}
 
@@ -694,11 +714,13 @@ func (c *StrategyConfig) UnmarshalJSON(data []byte) error {
 		GridConfig    *GridStrategyConfig    `json:"grid_config"`
 		PublishConfig *PublishStrategyConfig `json:"publish_config"`
 
-		CoinSource     *CoinSourceConfig     `json:"coin_source"`
-		Indicators     *IndicatorConfig      `json:"indicators"`
-		CustomPrompt   *string               `json:"custom_prompt"`
-		RiskControl    *RiskControlConfig    `json:"risk_control"`
-		PromptSections *PromptSectionsConfig `json:"prompt_sections"`
+		CoinSource      *CoinSourceConfig        `json:"coin_source"`
+		Indicators      *IndicatorConfig         `json:"indicators"`
+		CustomPrompt    *string                  `json:"custom_prompt"`
+		RiskControl     *RiskControlConfig       `json:"risk_control"`
+		PromptSections  *PromptSectionsConfig    `json:"prompt_sections"`
+		DecisionWeights *DecisionWeightsConfig   `json:"decision_weights"`
+		SentimentConfig *SentimentAnalysisConfig `json:"sentiment_config"`
 	}
 
 	var raw rawStrategyConfig
@@ -717,6 +739,8 @@ func (c *StrategyConfig) UnmarshalJSON(data []byte) error {
 		c.CustomPrompt = raw.AIConfig.CustomPrompt
 		c.RiskControl = raw.AIConfig.RiskControl
 		c.PromptSections = raw.AIConfig.PromptSections
+		c.DecisionWeights = raw.AIConfig.DecisionWeights
+		c.SentimentConfig = raw.AIConfig.SentimentConfig
 	} else {
 		if raw.CoinSource != nil {
 			c.CoinSource = *raw.CoinSource
@@ -732,6 +756,12 @@ func (c *StrategyConfig) UnmarshalJSON(data []byte) error {
 		}
 		if raw.PromptSections != nil {
 			c.PromptSections = *raw.PromptSections
+		}
+		if raw.DecisionWeights != nil {
+			c.DecisionWeights = *raw.DecisionWeights
+		}
+		if raw.SentimentConfig != nil {
+			c.SentimentConfig = *raw.SentimentConfig
 		}
 	}
 
@@ -931,7 +961,9 @@ type RiskControlConfig struct {
 	// Min take_profit / stop_loss ratio (AI guided)
 	MinRiskRewardRatio float64 `json:"min_risk_reward_ratio"`
 	// Min AI confidence to open position (AI guided)
-	MinConfidence int `json:"min_confidence"`
+	MinConfidence       int     `json:"min_confidence"`
+	DrawdownMinProfit   float64 `json:"drawdown_min_profit,omitempty"`
+	DrawdownMaxDrawdown float64 `json:"drawdown_max_drawdown,omitempty"`
 }
 
 // NewStrategyStore creates a new StrategyStore
@@ -1023,7 +1055,14 @@ func GetDefaultStrategyConfig(lang string) StrategyConfig {
 			MinPositionSize:              12,  // Min 12 USDT per position (CODE ENFORCED)
 			MinRiskRewardRatio:           3.0, // Min 3:1 profit/loss ratio (AI guided)
 			MinConfidence:                78,  // Min 78% confidence (AI guided)
+			DrawdownMinProfit:            8.0,
+			DrawdownMaxDrawdown:          55.0,
 		},
+		DecisionWeights: DecisionWeightsConfig{
+			TechnicalWeight: 30, SentimentWeight: 40,
+			ValuationWeight: 15, FundamentalWeight: 15,
+		},
+		SentimentConfig: SentimentAnalysisConfig{EnableFearGreedIndex: true},
 	}
 
 	if lang == "zh" {

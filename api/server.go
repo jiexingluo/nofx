@@ -284,6 +284,7 @@ CRITICAL: The "id" field (e.g. "abc123_deepseek") is what you must use for ai_mo
 model_id values: "openai","deepseek","qwen","kimi","grok","gemini","claude"
 Defaults when custom fields empty: openai→api.openai.com/v1, deepseek→api.deepseek.com, qwen→dashscope.aliyuncs.com/compatible-mode/v1, kimi→api.moonshot.ai/v1, grok→api.x.ai/v1, gemini→generativelanguage.googleapis.com/v1beta/openai, claude→api.anthropic.com/v1`,
 				s.handleUpdateModelConfigs)
+			s.route(protected, "POST", "/models/test", "Test AI model credentials", s.handleTestModelConfig)
 
 			// Exchange configuration
 			s.routeWithSchema(protected, "GET", "/exchanges", "List exchange accounts",
@@ -311,6 +312,7 @@ Use this to enable/disable an exchange or update API credentials. The "id" field
 			s.routeWithSchema(protected, "DELETE", "/exchanges/:id", "Delete exchange account",
 				`:id = EXACT id from GET /api/exchanges. Permanently removes the exchange account and disconnects any traders using it.`,
 				s.handleDeleteExchange)
+			s.route(protected, "POST", "/exchanges/test", "Test exchange credentials", s.handleTestExchangeConfig)
 
 			// Telegram bot configuration
 			s.routeWithSchema(protected, "GET", "/telegram", "Get Telegram bot configuration",

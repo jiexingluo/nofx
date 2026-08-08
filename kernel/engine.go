@@ -113,6 +113,9 @@ type Context struct {
 	BTCETHLeverage     int                                `json:"-"`
 	AltcoinLeverage    int                                `json:"-"`
 	Timeframes         []string                           `json:"-"`
+	SentimentData      *market.SentimentData              `json:"-"`
+	ValuationData      *market.ValuationData              `json:"-"`
+	DecisionWeights    *store.DecisionWeightsConfig       `json:"-"`
 }
 
 // Decision AI trading decision

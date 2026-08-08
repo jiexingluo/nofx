@@ -89,6 +89,12 @@ func formatContextData(ctx *Context, lang Language) string {
 		}
 	}
 
+	if lang == LangChinese {
+		sb.WriteString(formatMultiFactorDataZH(ctx))
+	} else {
+		sb.WriteString(formatMultiFactorDataEN(ctx))
+	}
+
 	// 7. OI ranking data (if available)
 	if ctx.OIRankingData != nil {
 		nofxosLang := nofxos.LangEnglish
