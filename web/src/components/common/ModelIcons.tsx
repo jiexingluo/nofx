@@ -16,6 +16,7 @@ const MODEL_COLORS: Record<string, string> = {
   minimax: '#E45735',
   claw402: '#7C3AED',
   zhipu: '#3859F3',
+  siliconflow: '#19B897',
 }
 
 // Returns the icon for an AI model
@@ -52,6 +53,9 @@ export const getModelIcon = (modelType: string, props: IconProps = {}) => {
       break
     case 'claw402':
       iconPath = '/icons/claw402.png'
+      break
+    case 'siliconflow':
+      iconPath = '/icons/siliconflow.svg'
       break
     default:
       return null

@@ -252,7 +252,23 @@ function defaultRisk(risk?: Partial<RiskControlConfig>): RiskControlConfig {
     min_position_size: risk?.min_position_size || 12,
     min_risk_reward_ratio: risk?.min_risk_reward_ratio || 3,
     min_confidence: risk?.min_confidence || 78,
+    drawdown_min_profit: risk?.drawdown_min_profit ?? 8,
+    drawdown_max_drawdown: risk?.drawdown_max_drawdown ?? 55,
   }
+}
+
+const defaultDecisionWeights = {
+  technical_weight: 30,
+  sentiment_weight: 40,
+  valuation_weight: 15,
+  fundamental_weight: 15,
+}
+
+const defaultSentimentConfig = {
+  enable_fear_greed_index: true,
+  enable_cryptoracle: false,
+  cryptoracle_api_key: '',
+  cryptoracle_endpoints: [],
 }
 
 function simplifyConfig(
@@ -268,6 +284,8 @@ function simplifyConfig(
       risk_control: defaultRisk(ai?.risk_control),
       custom_prompt: ai?.custom_prompt || '',
       prompt_sections: ai?.prompt_sections,
+      decision_weights: ai?.decision_weights || defaultDecisionWeights,
+      sentiment_config: ai?.sentiment_config || defaultSentimentConfig,
     },
     grid_config: null,
     publish_config: config?.publish_config,
@@ -1025,6 +1043,8 @@ export function StrategyStudioPage() {
   const coinSource = aiConfig?.coin_source
   const indicators = aiConfig?.indicators
   const risk = aiConfig?.risk_control
+  const decisionWeights = aiConfig?.decision_weights || defaultDecisionWeights
+  const sentimentConfig = aiConfig?.sentiment_config || defaultSentimentConfig
   const selectedSymbols = coinSource?.static_coins || []
   const scope = 'all' as Scope
   const activeProfile = profileFromRisk(risk)
@@ -1243,6 +1263,38 @@ export function StrategyStudioPage() {
         ...patch,
       }),
     })
+  }
+
+  const patchDecisionWeight = (
+    key:
+      | 'technical_weight'
+      | 'sentiment_weight'
+      | 'valuation_weight'
+      | 'fundamental_weight',
+    requestedValue: number
+  ) => {
+    const next = { ...decisionWeights }
+    const value = Math.max(0, Math.min(100, Math.round(requestedValue)))
+    const otherKeys = (
+      Object.keys(next) as Array<keyof typeof defaultDecisionWeights>
+    ).filter((item) => item !== key)
+    const remaining = 100 - value
+    const otherTotal = otherKeys.reduce((sum, item) => sum + next[item], 0)
+    let assigned = 0
+    otherKeys.forEach((item, index) => {
+      const adjusted =
+        index === otherKeys.length - 1
+          ? remaining - assigned
+          : Math.round(
+              otherTotal > 0
+                ? (next[item] / otherTotal) * remaining
+                : remaining / otherKeys.length
+            )
+      next[item] = adjusted
+      assigned += adjusted
+    })
+    next[key] = value
+    patchAI({ decision_weights: next })
   }
 
   const createStrategy = async () => {
@@ -2170,7 +2222,7 @@ export function StrategyStudioPage() {
                 ) : null}
               </section>
 
-              <details className="hidden rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper p-4">
+              <details className="rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-deeper p-4">
                 <summary className="cursor-pointer text-sm font-semibold text-nofx-text">
                   {text(language, 'Advanced settings', 'Advanced settings')}
                 </summary>
@@ -2322,6 +2374,167 @@ export function StrategyStudioPage() {
                       </label>
                     </div>
                   </div>
+                </div>
+
+                <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                  <div className="rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-lighter p-4">
+                    <div className="mb-4 text-sm font-semibold text-nofx-text">
+                      {text(
+                        language,
+                        '决策权重（总计 100%）',
+                        'Decision weights (total 100%)'
+                      )}
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {(
+                        [
+                          ['technical_weight', 'Technical'],
+                          ['sentiment_weight', 'Sentiment'],
+                          ['valuation_weight', 'Valuation'],
+                          ['fundamental_weight', 'Fundamental'],
+                        ] as const
+                      ).map(([key, label]) => (
+                        <label key={key} className="space-y-2">
+                          <span className="flex justify-between text-xs text-nofx-text-muted">
+                            <span>
+                              {text(
+                                language,
+                                {
+                                  Technical: '技术面',
+                                  Sentiment: '情绪面',
+                                  Valuation: '估值面',
+                                  Fundamental: '基本面',
+                                }[label],
+                                label
+                              )}
+                            </span>
+                            <span>{decisionWeights[key]}%</span>
+                          </span>
+                          <input
+                            type="range"
+                            min={0}
+                            max={100}
+                            value={decisionWeights[key]}
+                            onChange={(event) =>
+                              patchDecisionWeight(
+                                key,
+                                Number(event.target.value)
+                              )
+                            }
+                            className="w-full accent-nofx-gold"
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-lighter p-4">
+                    <div className="mb-4 text-sm font-semibold text-nofx-text">
+                      {text(language, '情绪数据', 'Sentiment data')}
+                    </div>
+                    <div className="space-y-3 text-sm text-nofx-text">
+                      <label className="flex items-center justify-between gap-3">
+                        <span>
+                          {text(
+                            language,
+                            '恐惧与贪婪指数',
+                            'Fear & Greed Index'
+                          )}
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={sentimentConfig.enable_fear_greed_index}
+                          onChange={(event) =>
+                            patchAI({
+                              sentiment_config: {
+                                ...sentimentConfig,
+                                enable_fear_greed_index: event.target.checked,
+                              },
+                            })
+                          }
+                          className="h-4 w-4 accent-nofx-gold"
+                        />
+                      </label>
+                      <label className="flex items-center justify-between gap-3">
+                        <span>CryptoRacle</span>
+                        <input
+                          type="checkbox"
+                          checked={sentimentConfig.enable_cryptoracle}
+                          onChange={(event) =>
+                            patchAI({
+                              sentiment_config: {
+                                ...sentimentConfig,
+                                enable_cryptoracle: event.target.checked,
+                              },
+                            })
+                          }
+                          className="h-4 w-4 accent-nofx-gold"
+                        />
+                      </label>
+                      {sentimentConfig.enable_cryptoracle ? (
+                        <input
+                          type="password"
+                          value={sentimentConfig.cryptoracle_api_key || ''}
+                          onChange={(event) =>
+                            patchAI({
+                              sentiment_config: {
+                                ...sentimentConfig,
+                                cryptoracle_api_key: event.target.value,
+                              },
+                            })
+                          }
+                          placeholder="CryptoRacle API Key"
+                          className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
+                        />
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid gap-4 rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-lighter p-4 sm:grid-cols-2">
+                  <label className="space-y-2">
+                    <span className="text-xs text-nofx-text-muted">
+                      {text(
+                        language,
+                        '回撤保护启动盈利 (%)',
+                        'Drawdown activation profit (%)'
+                      )}
+                    </span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.5}
+                      value={risk.drawdown_min_profit ?? 8}
+                      onChange={(event) =>
+                        patchRisk({
+                          drawdown_min_profit: Number(event.target.value),
+                        })
+                      }
+                      className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
+                    />
+                  </label>
+                  <label className="space-y-2">
+                    <span className="text-xs text-nofx-text-muted">
+                      {text(
+                        language,
+                        '最大盈利回吐 (%)',
+                        'Maximum profit giveback (%)'
+                      )}
+                    </span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={risk.drawdown_max_drawdown ?? 55}
+                      onChange={(event) =>
+                        patchRisk({
+                          drawdown_max_drawdown: Number(event.target.value),
+                        })
+                      }
+                      className="w-full rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg px-3 py-2 text-sm text-nofx-text"
+                    />
+                  </label>
                 </div>
 
                 <div className="mt-4 rounded-lg border border-[rgba(26,24,19,0.14)] bg-nofx-bg-lighter p-4">
