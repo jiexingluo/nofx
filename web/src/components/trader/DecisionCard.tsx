@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type KeyboardEvent } from 'react'
 import type { DecisionRecord, DecisionAction } from '../../types'
 import { t, type Language } from '../../i18n/translations'
 
@@ -6,6 +6,19 @@ interface DecisionCardProps {
   decision: DecisionRecord
   language: Language
   onSymbolClick?: (symbol: string) => void
+}
+
+// The collapsible header rows below nest copy/download <button>s inside the
+// toggle target, which real <button> elements can't contain (invalid HTML,
+// React warns on it) — so the toggle target is a div with button semantics
+// instead, and needs its own keyboard handling.
+function onToggleKeyDown(toggle: () => void) {
+  return (event: KeyboardEvent) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      toggle()
+    }
+  }
 }
 
 // Action type configuration
@@ -219,6 +232,7 @@ function ActionCard({ action, language, onSymbolClick }: { action: DecisionActio
 export function DecisionCard({ decision, language, onSymbolClick }: DecisionCardProps) {
   const [showSystemPrompt, setShowSystemPrompt] = useState(false)
   const [showInputPrompt, setShowInputPrompt] = useState(false)
+  const [showRawResponse, setShowRawResponse] = useState(false)
   const [showCoT, setShowCoT] = useState(false)
 
   // Copy text to clipboard
@@ -296,9 +310,12 @@ export function DecisionCard({ decision, language, onSymbolClick }: DecisionCard
         {/* System Prompt */}
         {decision.system_prompt && (
           <div>
-            <button
+            <div
+              role="button"
+              tabIndex={0}
               onClick={() => setShowSystemPrompt(!showSystemPrompt)}
-              className="flex items-center gap-2 text-sm transition-colors w-full justify-between p-2 rounded hover:bg-nofx-gold/10"
+              onKeyDown={onToggleKeyDown(() => setShowSystemPrompt(!showSystemPrompt))}
+              className="flex items-center gap-2 text-sm transition-colors w-full justify-between p-2 rounded hover:bg-nofx-gold/10 cursor-pointer"
             >
               <div className="flex items-center gap-2">
                 <span className="text-base">⚙️</span>
@@ -336,7 +353,7 @@ export function DecisionCard({ decision, language, onSymbolClick }: DecisionCard
                   {showSystemPrompt ? t('collapse', language) : t('expand', language)}
                 </span>
               </div>
-            </button>
+            </div>
             {showSystemPrompt && (
               <div
                 className="mt-2 rounded-lg p-4 text-sm font-mono whitespace-pre-wrap max-h-96 overflow-y-auto"
@@ -355,9 +372,12 @@ export function DecisionCard({ decision, language, onSymbolClick }: DecisionCard
         {/* User/Input Prompt */}
         {decision.input_prompt && (
           <div>
-            <button
+            <div
+              role="button"
+              tabIndex={0}
               onClick={() => setShowInputPrompt(!showInputPrompt)}
-              className="flex items-center gap-2 text-sm transition-colors w-full justify-between p-2 rounded hover:bg-nofx-gold/10"
+              onKeyDown={onToggleKeyDown(() => setShowInputPrompt(!showInputPrompt))}
+              className="flex items-center gap-2 text-sm transition-colors w-full justify-between p-2 rounded hover:bg-nofx-gold/10 cursor-pointer"
             >
               <div className="flex items-center gap-2">
                 <span className="text-base">📥</span>
@@ -395,7 +415,7 @@ export function DecisionCard({ decision, language, onSymbolClick }: DecisionCard
                   {showInputPrompt ? t('collapse', language) : t('expand', language)}
                 </span>
               </div>
-            </button>
+            </div>
             {showInputPrompt && (
               <div
                 className="mt-2 rounded-lg p-4 text-sm font-mono whitespace-pre-wrap max-h-96 overflow-y-auto"
@@ -406,6 +426,68 @@ export function DecisionCard({ decision, language, onSymbolClick }: DecisionCard
                 }}
               >
                 {decision.input_prompt}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Raw Response */}
+        {decision.raw_response && (
+          <div>
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => setShowRawResponse(!showRawResponse)}
+              onKeyDown={onToggleKeyDown(() => setShowRawResponse(!showRawResponse))}
+              className="flex items-center gap-2 text-sm transition-colors w-full justify-between p-2 rounded hover:bg-nofx-gold/10 cursor-pointer"
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-base">📤</span>
+                <span className="font-semibold" style={{ color: '#E0483B' }}>
+                  Raw Response
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    copyToClipboard(decision.raw_response!, 'Raw Response')
+                  }}
+                  className="text-xs px-2.5 py-1 rounded hover:opacity-80 transition-opacity flex items-center gap-1"
+                  style={{ background: 'rgba(224, 72, 59, 0.2)', color: '#E0483B', border: '1px solid rgba(224, 72, 59, 0.3)' }}
+                  title="Copy to clipboard"
+                >
+                  <span>📋</span>
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    downloadAsFile(decision.raw_response!, `raw-response-cycle-${decision.cycle_number}.txt`)
+                  }}
+                  className="text-xs px-2.5 py-1 rounded hover:opacity-80 transition-opacity flex items-center gap-1"
+                  style={{ background: 'rgba(224, 72, 59, 0.2)', color: '#E0483B', border: '1px solid rgba(224, 72, 59, 0.3)' }}
+                  title="Download as file"
+                >
+                  <span>💾</span>
+                </button>
+                <span
+                  className="text-xs px-2 py-0.5 rounded"
+                  style={{ background: 'rgba(224, 72, 59, 0.15)', color: '#E0483B' }}
+                >
+                  {showRawResponse ? t('collapse', language) : t('expand', language)}
+                </span>
+              </div>
+            </div>
+            {showRawResponse && (
+              <div
+                className="mt-2 rounded-lg p-4 text-sm font-mono whitespace-pre-wrap max-h-96 overflow-y-auto"
+                style={{
+                  background: '#E8E2D5',
+                  border: '1px solid rgba(26,24,19,0.14)',
+                  color: '#1A1813',
+                }}
+              >
+                {decision.raw_response}
               </div>
             )}
           </div>

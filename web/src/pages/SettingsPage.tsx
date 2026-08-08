@@ -10,6 +10,8 @@ import {
   ChevronRight,
   Plus,
   Pencil,
+  ScrollText,
+  RefreshCw,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { useLanguage } from '../contexts/LanguageContext'
@@ -17,9 +19,16 @@ import { api } from '../lib/api'
 import { ExchangeConfigModal } from '../components/trader/ExchangeConfigModal'
 import { TelegramConfigModal } from '../components/trader/TelegramConfigModal'
 import { ModelConfigModal } from '../components/trader/ModelConfigModal'
-import type { Exchange, AIModel, ExchangeAccountState } from '../types'
+import { DecisionCard } from '../components/trader/DecisionCard'
+import type {
+  Exchange,
+  AIModel,
+  ExchangeAccountState,
+  DecisionRecord,
+  TraderInfo,
+} from '../types'
 
-type Tab = 'account' | 'models' | 'exchanges' | 'telegram'
+type Tab = 'account' | 'models' | 'exchanges' | 'telegram' | 'logs'
 
 function configBadge(label: string, active: boolean) {
   return (
@@ -63,6 +72,13 @@ export function SettingsPage() {
   // Telegram state
   const [showTelegramModal, setShowTelegramModal] = useState(false)
 
+  // Logs state
+  const [logTraders, setLogTraders] = useState<TraderInfo[]>([])
+  const [selectedLogTraderId, setSelectedLogTraderId] = useState('')
+  const [decisions, setDecisions] = useState<DecisionRecord[]>([])
+  const [decisionsLoading, setDecisionsLoading] = useState(false)
+  const [decisionsLimit, setDecisionsLimit] = useState(20)
+
   const refreshModelConfigs = async () => {
     const [configs, supported] = await Promise.all([
       api.getModelConfigs(),
@@ -93,6 +109,19 @@ export function SettingsPage() {
     }
   }
 
+  const refreshDecisions = async (traderId: string, limit: number) => {
+    if (!traderId) return
+    setDecisionsLoading(true)
+    try {
+      const records = await api.getLatestDecisions(traderId, limit)
+      setDecisions(records)
+    } catch {
+      toast.error('Failed to load logs')
+    } finally {
+      setDecisionsLoading(false)
+    }
+  }
+
   // Fetch data when tabs are visited
   useEffect(() => {
     if (activeTab === 'models') {
@@ -103,7 +132,24 @@ export function SettingsPage() {
         toast.error('Failed to load exchanges')
       )
     }
+    if (activeTab === 'logs') {
+      api
+        .getTraders()
+        .then((traders) => {
+          setLogTraders(traders)
+          setSelectedLogTraderId((prev) => prev || traders[0]?.trader_id || '')
+        })
+        .catch(() => toast.error('Failed to load traders'))
+    }
   }, [activeTab])
+
+  // Re-fetch logs whenever the logs tab is active and the selected trader or
+  // page size changes (covers initial load once a default trader is picked,
+  // manual trader switch, and manual limit switch).
+  useEffect(() => {
+    if (activeTab !== 'logs' || !selectedLogTraderId) return
+    refreshDecisions(selectedLogTraderId, decisionsLimit)
+  }, [activeTab, selectedLogTraderId, decisionsLimit])
 
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -332,6 +378,7 @@ export function SettingsPage() {
     { key: 'models', label: 'AI Models', icon: <Cpu size={16} /> },
     { key: 'exchanges', label: 'Exchanges', icon: <Building2 size={16} /> },
     { key: 'telegram', label: 'Telegram', icon: <MessageCircle size={16} /> },
+    { key: 'logs', label: 'Logs', icon: <ScrollText size={16} /> },
   ]
 
   return (
@@ -630,6 +677,83 @@ export function SettingsPage() {
                   className="text-nofx-text-muted group-hover:text-nofx-text-muted transition-colors"
                 />
               </button>
+            </div>
+          )}
+
+          {/* Logs Tab */}
+          {activeTab === 'logs' && (
+            <div className="space-y-4">
+              {logTraders.length === 0 ? (
+                <div className="text-center py-8 text-nofx-text-muted text-sm">
+                  No trader configured yet
+                </div>
+              ) : (
+                <>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    {logTraders.length > 1 ? (
+                      <select
+                        value={selectedLogTraderId}
+                        onChange={(e) => setSelectedLogTraderId(e.target.value)}
+                        className="bg-nofx-bg-deeper border border-[rgba(26,24,19,0.14)] rounded-lg px-3 py-1.5 text-xs text-nofx-text focus:outline-none focus:border-nofx-gold/60"
+                      >
+                        {logTraders.map((trader) => (
+                          <option key={trader.trader_id} value={trader.trader_id}>
+                            {trader.trader_name}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <p className="text-sm text-nofx-text-muted">
+                        {logTraders[0].trader_name}
+                      </p>
+                    )}
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={decisionsLimit}
+                        onChange={(e) =>
+                          setDecisionsLimit(Number(e.target.value))
+                        }
+                        className="bg-nofx-bg-deeper border border-[rgba(26,24,19,0.14)] rounded-lg px-3 py-1.5 text-xs text-nofx-text focus:outline-none focus:border-nofx-gold/60"
+                      >
+                        <option value={20}>Last 20</option>
+                        <option value={50}>Last 50</option>
+                        <option value={100}>Last 100</option>
+                      </select>
+                      <button
+                        onClick={() =>
+                          refreshDecisions(selectedLogTraderId, decisionsLimit)
+                        }
+                        disabled={decisionsLoading}
+                        className="flex items-center gap-1.5 text-xs font-medium bg-nofx-bg-deeper hover:bg-nofx-bg-deeper disabled:opacity-60 text-nofx-text px-3 py-1.5 rounded-lg transition-colors"
+                      >
+                        <RefreshCw
+                          size={12}
+                          className={decisionsLoading ? 'animate-spin' : ''}
+                        />
+                        Refresh
+                      </button>
+                    </div>
+                  </div>
+
+                  {decisions.length === 0 ? (
+                    <div className="text-center py-8 text-nofx-text-muted text-sm">
+                      {decisionsLoading
+                        ? 'Loading…'
+                        : 'No decisions logged yet — the trader records one entry per cycle once it starts running.'}
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {decisions.map((decision, index) => (
+                        <DecisionCard
+                          key={decision.id ?? index}
+                          decision={decision}
+                          language={language}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           )}
         </div>

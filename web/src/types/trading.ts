@@ -74,12 +74,16 @@ export interface AccountSnapshot {
 }
 
 export interface DecisionRecord {
+  id?: number
+  trader_id?: string
   timestamp: string
   cycle_number: number
   system_prompt: string
   input_prompt: string
   cot_trace: string
   decision_json: string
+  raw_response?: string
+  ai_request_duration_ms?: number
   account_state: AccountSnapshot
   positions: any[]
   candidate_coins: string[]
