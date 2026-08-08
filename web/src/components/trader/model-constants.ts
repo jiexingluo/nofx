@@ -130,6 +130,49 @@ export const AI_PROVIDER_CONFIG: Record<string, AIProviderConfig> = {
     apiUrl: 'https://cloud.siliconflow.cn/account/ak',
     apiName: 'SiliconFlow API Key',
   },
+  // Direct provider APIs. defaultModel must match handleGetSupportedModels in
+  // api/handler_ai_model.go verbatim — the picker shows this value while the
+  // backend is what actually gets sent.
+  openai: {
+    defaultModel: 'gpt-5.6',
+    apiUrl: 'https://platform.openai.com/api-keys',
+    apiName: 'OpenAI',
+  },
+  claude: {
+    defaultModel: 'claude-opus-5',
+    apiUrl: 'https://console.anthropic.com/settings/keys',
+    apiName: 'Anthropic',
+  },
+  gemini: {
+    defaultModel: 'gemini-3-pro',
+    apiUrl: 'https://aistudio.google.com/app/apikey',
+    apiName: 'Google AI Studio',
+  },
+  deepseek: {
+    defaultModel: 'deepseek-chat',
+    apiUrl: 'https://platform.deepseek.com/api_keys',
+    apiName: 'DeepSeek',
+  },
+  qwen: {
+    defaultModel: 'qwen3-max',
+    apiUrl: 'https://dashscope.console.aliyun.com/apiKey',
+    apiName: 'Alibaba Cloud',
+  },
+  grok: {
+    defaultModel: 'grok-3-latest',
+    apiUrl: 'https://console.x.ai/',
+    apiName: 'xAI',
+  },
+  kimi: {
+    defaultModel: 'moonshot-v1-auto',
+    apiUrl: 'https://platform.moonshot.ai/console/api-keys',
+    apiName: 'Moonshot',
+  },
+  minimax: {
+    defaultModel: 'MiniMax-M2.7',
+    apiUrl: 'https://platform.minimax.io',
+    apiName: 'MiniMax',
+  },
 }
 
 // Helper function to get exchange display name from exchange ID (UUID)

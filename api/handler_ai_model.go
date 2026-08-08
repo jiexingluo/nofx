@@ -248,6 +248,18 @@ func (s *Server) handleGetSupportedModels(c *gin.Context) {
 	supportedModels := []map[string]interface{}{
 		{"id": "claw402", "name": "Claw402 (Base USDC)", "provider": "claw402", "defaultModel": "gpt-5.6"},
 		{"id": "siliconflow", "name": "SiliconFlow", "provider": "siliconflow", "defaultModel": "Qwen/Qwen3-8B"},
+		// Direct provider APIs — bring your own key instead of routing through a
+		// payment gateway. Every one of these is registered in mcp/registry.go by
+		// the init() in its mcp/provider/*.go file, so NewAIClientByProvider (and
+		// therefore /api/models/test) already handles them without further changes.
+		{"id": "openai", "name": "OpenAI", "provider": "openai", "defaultModel": "gpt-5.6"},
+		{"id": "claude", "name": "Claude", "provider": "claude", "defaultModel": "claude-opus-5"},
+		{"id": "gemini", "name": "Google Gemini", "provider": "gemini", "defaultModel": "gemini-3-pro"},
+		{"id": "deepseek", "name": "DeepSeek", "provider": "deepseek", "defaultModel": "deepseek-chat"},
+		{"id": "qwen", "name": "Qwen", "provider": "qwen", "defaultModel": "qwen3-max"},
+		{"id": "grok", "name": "Grok (xAI)", "provider": "grok", "defaultModel": "grok-3-latest"},
+		{"id": "kimi", "name": "Kimi (Moonshot)", "provider": "kimi", "defaultModel": "moonshot-v1-auto"},
+		{"id": "minimax", "name": "MiniMax", "provider": "minimax", "defaultModel": "MiniMax-M2.7"},
 	}
 
 	c.JSON(http.StatusOK, supportedModels)
