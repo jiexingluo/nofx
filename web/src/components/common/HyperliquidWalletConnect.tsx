@@ -114,6 +114,7 @@ export function HyperliquidWalletConnect({
 }: HyperliquidWalletConnectProps) {
   const inline = variant === 'inline'
   const [open, setOpen] = useState(inline)
+  const containerRef = useRef<HTMLDivElement>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [state, setState] = useState<FlowState>(() => getSavedState())
@@ -309,6 +310,23 @@ export function HyperliquidWalletConnect({
       void refreshAgentInfo(state.mainWallet)
     }
   }, [open, state.mainWallet])
+
+  // The dropdown variant lives in the fixed header, which persists across
+  // client-side navigation, so leaving it open with no dismissal path means
+  // it keeps floating above every subsequent page until manually toggled.
+  useEffect(() => {
+    if (inline || !open) return
+    function handleClickOutside(event: MouseEvent) {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(event.target as Node)
+      ) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [inline, open])
 
   async function refreshAgentInfo(address = state.mainWallet) {
     if (!address) return
@@ -910,7 +928,7 @@ export function HyperliquidWalletConnect({
   }
 
   return (
-    <div className={inline ? 'relative w-full' : 'relative'}>
+    <div ref={containerRef} className={inline ? 'relative w-full' : 'relative'}>
       {!inline && (
         <button
           type="button"
