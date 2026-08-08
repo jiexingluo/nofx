@@ -248,4 +248,25 @@ describe('Hyperliquid guided connection', () => {
     await screen.findByText('Hyperliquid is ready')
     expect(screen.queryByRole('button', { name: 'Save connection' })).toBeNull()
   })
+
+  it('does not give the inline panel a stacking z-index that can float above other page overlays', () => {
+    const { container } = render(
+      <HyperliquidWalletConnect language="en" isLoggedIn variant="inline" />
+    )
+
+    const panel = container.querySelector('.rounded-2xl')
+    expect(panel).toBeTruthy()
+    expect(panel?.className).not.toMatch(/z-\[80\]/)
+  })
+
+  it('gives the floating dropdown panel a z-index so it can render above page content', () => {
+    const { container } = render(
+      <HyperliquidWalletConnect language="en" isLoggedIn />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Connect Hyperliquid' }))
+    const panel = container.querySelector('.rounded-2xl')
+    expect(panel).toBeTruthy()
+    expect(panel?.className).toMatch(/z-\[80\]/)
+  })
 })
