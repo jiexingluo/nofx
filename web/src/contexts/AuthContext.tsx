@@ -52,13 +52,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     // Check if admin mode is active (uses cached system config)
     getSystemConfig()
-      .then(() => {
+      .then((systemConfig) => {
         // No longer simulate login in admin mode; check local storage uniformly
         const savedToken = localStorage.getItem('auth_token')
         const savedUser = localStorage.getItem('auth_user')
         if (savedToken && savedUser) {
           setToken(savedToken)
           setUser(JSON.parse(savedUser))
+        } else if (systemConfig.local_admin_bypass_enabled) {
+          const defaultUser = { id: 'admin-default', email: 'admin@localhost' }
+          const defaultToken = 'bypass-token'
+          setToken(defaultToken)
+          setUser(defaultUser)
+          localStorage.setItem('auth_token', defaultToken)
+          localStorage.setItem('auth_user', JSON.stringify(defaultUser))
         }
 
         setIsLoading(false)

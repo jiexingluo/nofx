@@ -27,6 +27,9 @@ type Config struct {
 	// Service configuration
 	APIServerPort int
 	JWTSecret     string
+	// LocalAdminBypassEnabled allows unauthenticated local-admin access.
+	// It is disabled by default and must be explicitly enabled by the operator.
+	LocalAdminBypassEnabled bool
 
 	// Database configuration
 	DBType     string // sqlite or postgres
@@ -98,6 +101,12 @@ func initConfig() error {
 	}
 	if len(cfg.JWTSecret) < minJWTSecretLength {
 		return fmt.Errorf("JWT_SECRET must be at least %d bytes (got %d); generate via `openssl rand -base64 48`", minJWTSecretLength, len(cfg.JWTSecret))
+	}
+	if v := os.Getenv("LOCAL_ADMIN_BYPASS_ENABLED"); v != "" {
+		cfg.LocalAdminBypassEnabled = strings.EqualFold(strings.TrimSpace(v), "true")
+	}
+	if cfg.LocalAdminBypassEnabled {
+		fmt.Fprintln(os.Stderr, "SECURITY WARNING: local admin authentication bypass is enabled")
 	}
 
 	if v := os.Getenv("API_SERVER_PORT"); v != "" {

@@ -1,6 +1,7 @@
 export interface SystemConfig {
   initialized: boolean
   beta_mode?: boolean
+  local_admin_bypass_enabled?: boolean
 }
 
 let configPromise: Promise<SystemConfig> | null = null
