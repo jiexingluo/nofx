@@ -114,6 +114,58 @@ func TestClient_CallWithMessages_Success(t *testing.T) {
 	}
 }
 
+func TestClient_CallWithMessages_FallsBackToReasoningContent(t *testing.T) {
+	// Some reasoning-capable models (e.g. DeepSeek's thinking models) put
+	// their whole answer in reasoning_content and leave content empty.
+	// Reproduces the production case where CallWithMessages silently
+	// returned "" despite a real, successful API response.
+	mockHTTP := NewMockHTTPClient()
+	mockHTTP.StatusCode = 200
+	mockHTTP.Response = `{"choices":[{"message":{"content":"","reasoning_content":"thinking... <decision>[]</decision>"}}]}`
+	mockLogger := NewMockLogger()
+
+	client := NewClient(
+		WithHTTPClient(mockHTTP.ToHTTPClient()),
+		WithLogger(mockLogger),
+		WithAPIKey("test-key"),
+		WithBaseURL("https://api.test.com"),
+	)
+
+	result, err := client.CallWithMessages("system prompt", "user prompt")
+
+	if err != nil {
+		t.Fatalf("should not error: %v", err)
+	}
+	if result != "thinking... <decision>[]</decision>" {
+		t.Errorf("expected fallback to reasoning_content, got %q", result)
+	}
+}
+
+func TestClient_CallWithMessages_PrefersContentOverReasoning(t *testing.T) {
+	// When both are present, content is the actual answer and must win —
+	// reasoning_content is only a fallback for the content-empty case.
+	mockHTTP := NewMockHTTPClient()
+	mockHTTP.StatusCode = 200
+	mockHTTP.Response = `{"choices":[{"message":{"content":"final answer","reasoning_content":"internal thinking"}}]}`
+	mockLogger := NewMockLogger()
+
+	client := NewClient(
+		WithHTTPClient(mockHTTP.ToHTTPClient()),
+		WithLogger(mockLogger),
+		WithAPIKey("test-key"),
+		WithBaseURL("https://api.test.com"),
+	)
+
+	result, err := client.CallWithMessages("system prompt", "user prompt")
+
+	if err != nil {
+		t.Fatalf("should not error: %v", err)
+	}
+	if result != "final answer" {
+		t.Errorf("expected content to win over reasoning_content, got %q", result)
+	}
+}
+
 func TestClient_CallWithMessages_NoAPIKey(t *testing.T) {
 	client := NewClient()
 

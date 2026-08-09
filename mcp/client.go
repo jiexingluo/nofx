@@ -294,6 +294,15 @@ func (client *Client) ParseMCPResponse(body []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if r.Content == "" && r.ReasoningContent != "" {
+		// Some reasoning-capable models (e.g. DeepSeek's thinking models) put
+		// their entire answer in reasoning_content and leave content empty,
+		// especially when the reply never reaches a distinct "final answer"
+		// segment. Falling back here is what keeps CallWithMessages callers
+		// (the trading loop's single-shot decision calls) from silently
+		// getting an empty string back despite a real, successful response.
+		return r.ReasoningContent, nil
+	}
 	return r.Content, nil
 }
 
