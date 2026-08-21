@@ -114,6 +114,75 @@ func TestClient_CallWithMessages_Success(t *testing.T) {
 	}
 }
 
+// TestClient_CallWithMessages_ParsesCacheTokenUsage pins down the plumbing
+// needed to see whether DeepSeek's automatic prompt caching is actually
+// firing: prompt_cache_hit_tokens/prompt_cache_miss_tokens is a DeepSeek-
+// specific extension to the OpenAI-compatible usage object, previously
+// parsed nowhere in this codebase, so cost/telemetry had no way to
+// distinguish a cached call from a full-price one.
+func TestClient_CallWithMessages_ParsesCacheTokenUsage(t *testing.T) {
+	mockHTTP := NewMockHTTPClient()
+	mockHTTP.StatusCode = 200
+	mockHTTP.Response = `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":40000,"completion_tokens":200,"total_tokens":40200,"prompt_cache_hit_tokens":38000,"prompt_cache_miss_tokens":2000}}`
+	mockLogger := NewMockLogger()
+
+	client := NewClient(
+		WithHTTPClient(mockHTTP.ToHTTPClient()),
+		WithLogger(mockLogger),
+		WithAPIKey("test-key"),
+		WithBaseURL("https://api.test.com"),
+	)
+
+	if _, err := client.CallWithMessages("system prompt", "user prompt"); err != nil {
+		t.Fatalf("should not error: %v", err)
+	}
+
+	usage := client.(*Client).LastCallUsage
+	if usage == nil {
+		t.Fatal("LastCallUsage should be populated after a successful call")
+	}
+	if usage.PromptTokens != 40000 || usage.CompletionTokens != 200 {
+		t.Fatalf("wrong base token counts: %+v", usage)
+	}
+	if usage.PromptCacheHitTokens != 38000 || usage.PromptCacheMissTokens != 2000 {
+		t.Fatalf("cache hit/miss tokens not parsed: %+v", usage)
+	}
+}
+
+// TestClient_Call_ResetsLastCallUsageOnFailure ensures a failed call never
+// reports stale usage/cost left over from a previous successful one - a
+// caller checking LastCallUsage after an error must see nil, not a number
+// that belongs to a different request.
+func TestClient_Call_ResetsLastCallUsageOnFailure(t *testing.T) {
+	mockHTTP := NewMockHTTPClient()
+	mockHTTP.StatusCode = 200
+	mockHTTP.Response = `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110}}`
+	mockLogger := NewMockLogger()
+
+	client := NewClient(
+		WithHTTPClient(mockHTTP.ToHTTPClient()),
+		WithLogger(mockLogger),
+		WithAPIKey("test-key"),
+		WithBaseURL("https://api.test.com"),
+	)
+
+	if _, err := client.CallWithMessages("system prompt", "user prompt"); err != nil {
+		t.Fatalf("first call should not error: %v", err)
+	}
+	if client.(*Client).LastCallUsage == nil {
+		t.Fatal("LastCallUsage should be populated after the first successful call")
+	}
+
+	mockHTTP.StatusCode = 500
+	mockHTTP.Response = `{"error":"server error"}`
+	if _, err := client.CallWithMessages("system prompt", "user prompt"); err == nil {
+		t.Fatal("second call should have errored")
+	}
+	if client.(*Client).LastCallUsage != nil {
+		t.Fatalf("LastCallUsage should be reset to nil after a failed call, still has: %+v", client.(*Client).LastCallUsage)
+	}
+}
+
 func TestClient_CallWithMessages_FallsBackToReasoningContent(t *testing.T) {
 	// Some reasoning-capable models (e.g. DeepSeek's thinking models) put
 	// their whole answer in reasoning_content and leave content empty.

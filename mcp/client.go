@@ -52,6 +52,13 @@ type TokenUsage struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+	// PromptCacheHitTokens/PromptCacheMissTokens split PromptTokens by
+	// whether the provider's automatic prompt caching (e.g. DeepSeek's
+	// Context Caching on Disk) served them from cache. Zero on providers
+	// that don't report this (most non-DeepSeek APIs) - callers must not
+	// assume PromptCacheHitTokens+PromptCacheMissTokens == PromptTokens.
+	PromptCacheHitTokens  int
+	PromptCacheMissTokens int
 }
 
 // Channel returns the payment channel category for telemetry.
@@ -321,6 +328,10 @@ func (client *Client) ParseMCPResponseFull(body []byte) (*LLMResponse, error) {
 			PromptTokens     int `json:"prompt_tokens"`
 			CompletionTokens int `json:"completion_tokens"`
 			TotalTokens      int `json:"total_tokens"`
+			// DeepSeek-specific extension to the OpenAI-compatible usage
+			// object; absent (zero) on providers without prompt caching.
+			PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+			PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
 		} `json:"usage"`
 	}
 
@@ -333,14 +344,20 @@ func (client *Client) ParseMCPResponseFull(body []byte) (*LLMResponse, error) {
 	}
 
 	// Report token usage if callback is set
-	if TokenUsageCallback != nil && result.Usage.TotalTokens > 0 {
-		TokenUsageCallback(TokenUsage{
-			Provider:         client.Provider,
-			Model:            client.Model,
-			PromptTokens:     result.Usage.PromptTokens,
-			CompletionTokens: result.Usage.CompletionTokens,
-			TotalTokens:      result.Usage.TotalTokens,
-		})
+	if result.Usage.TotalTokens > 0 {
+		usage := TokenUsage{
+			Provider:              client.Provider,
+			Model:                 client.Model,
+			PromptTokens:          result.Usage.PromptTokens,
+			CompletionTokens:      result.Usage.CompletionTokens,
+			TotalTokens:           result.Usage.TotalTokens,
+			PromptCacheHitTokens:  result.Usage.PromptCacheHitTokens,
+			PromptCacheMissTokens: result.Usage.PromptCacheMissTokens,
+		}
+		client.LastCallUsage = &usage
+		if TokenUsageCallback != nil {
+			TokenUsageCallback(usage)
+		}
 	}
 
 	msg := result.Choices[0].Message
@@ -407,6 +424,10 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 
 // Call single AI API call (fixed flow, cannot be overridden)
 func (client *Client) Call(systemPrompt, userPrompt string) (string, error) {
+	// Cleared up front so a failed call never reports stale usage/cost from
+	// a previous successful one (mirrors the x402 streaming path's reset).
+	client.LastCallUsage = nil
+
 	// Print current AI configuration
 	client.Log.Infof("📡 [%s] Request AI Server: BaseURL: %s", client.String(), client.BaseURL)
 	client.Log.Debugf("[%s] UseFullURL: %v", client.String(), client.UseFullURL)

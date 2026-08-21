@@ -115,11 +115,15 @@ var DataDictionary = map[string]map[string]BilingualFieldDef{
 			DescEN: "Average price when closing position",
 		},
 		"Profit": {
-			NameZH:    "Realized PnL",
-			NameEN:    "Realized PnL",
-			Unit:      "USDT",
-			FormulaZH: "(Exit Price - Entry Price) / Entry Price × Leverage × Position Value",
-			FormulaEN: "(Exit Price - Entry Price) / Entry Price × Leverage × Position Value",
+			NameZH: "Realized PnL",
+			NameEN: "Realized PnL",
+			Unit:   "USDT",
+			// No × Leverage here, unlike PnL% below: Position Value is already
+			// the full notional exposure (see Margin = Position Value /
+			// Leverage), so leverage only changes margin/liquidation
+			// distance, not the dollar P&L for a given price move.
+			FormulaZH: "(Exit Price - Entry Price) / Entry Price × Position Value",
+			FormulaEN: "(Exit Price - Entry Price) / Entry Price × Position Value",
 			DescZH:    "Actual P&L of closed trades, including fees. Positive=profit, Negative=loss",
 			DescEN:    "Actual profit/loss of closed trades including fees. Positive=profit, Negative=loss",
 		},

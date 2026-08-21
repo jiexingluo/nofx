@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"nofx/crypto"
 	"nofx/logger"
+	"nofx/mcp"
 	"os"
 	"strings"
 	"time"
@@ -245,8 +246,18 @@ func (s *AIModelStore) UpdateWithName(userID, id, name string, enabled bool, api
 		return s.db.Model(&existingModel).Updates(updates).Error
 	}
 
-	// Create new record
-	if provider == id && (provider == "deepseek" || provider == "qwen") {
+	// Create new record. `id` here is normally a bare catalog provider slug
+	// (e.g. "codex_cli", "deepseek") - the frontend's "add new model" flow
+	// always sends the catalog id verbatim as the map key, and every entry
+	// in that catalog has id == provider (api/handler_ai_model.go's
+	// handleGetSupportedModels). Prefer recognizing a registered provider
+	// name outright over guessing from substrings: splitting id on "_" and
+	// taking the last segment (the old approach, still kept as a fallback
+	// for legacy/unrecognized ids) silently mis-derives "cli" for any
+	// provider whose own name contains an underscore - caught live via
+	// "codex_cli" being saved as provider "cli", an unregistered name that
+	// never resolves to the real client.
+	if mcp.IsRegisteredProvider(id) {
 		provider = id
 	} else {
 		parts := strings.Split(id, "_")

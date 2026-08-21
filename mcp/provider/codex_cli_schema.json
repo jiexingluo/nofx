@@ -1,0 +1,40 @@
+{
+  "type": "object",
+  "properties": {
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "symbol": { "type": "string" },
+          "action": { "type": "string" },
+          "leverage": { "type": ["integer", "null"] },
+          "position_size_usd": { "type": ["number", "null"] },
+          "stop_loss": { "type": ["number", "null"] },
+          "take_profit": { "type": ["number", "null"] },
+          "price": { "type": ["number", "null"] },
+          "quantity": { "type": ["number", "null"] },
+          "confidence": { "type": ["integer", "null"] },
+          "risk_usd": { "type": ["number", "null"] },
+          "reasoning": { "type": "string" }
+        },
+        "required": [
+          "symbol",
+          "action",
+          "leverage",
+          "position_size_usd",
+          "stop_loss",
+          "take_profit",
+          "price",
+          "quantity",
+          "confidence",
+          "risk_usd",
+          "reasoning"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["decisions"],
+  "additionalProperties": false
+}

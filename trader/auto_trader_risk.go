@@ -17,6 +17,13 @@ const (
 	// closes if the position gives back 40% of its peak profit.
 	drawdownClosePriceGainPct = 5.0
 	drawdownCloseGivebackPct  = 40.0
+
+	// trailingStopATRMultiplier sets how far behind the peak price the
+	// trailing stop sits, in ATR14 units. 2.5x is the middle of the 2-3x
+	// range commonly used for crypto Chandelier-Exit-style trailing stops —
+	// tight enough to protect gains, wide enough to survive normal
+	// volatility without getting shaken out early.
+	trailingStopATRMultiplier = 2.5
 )
 
 // shouldDrawdownClose reports whether the profit-protection close should fire.
@@ -41,6 +48,11 @@ func (at *AutoTrader) startDrawdownMonitor() {
 			select {
 			case <-ticker.C:
 				at.checkPositionDrawdown()
+				at.updateTrailingStops()
+				// Last: both calls above already fetched positions, so this
+				// one lands inside the exchange client's short position cache
+				// and costs no extra API call in practice.
+				at.reconcileOpenPositions()
 			case <-at.stopMonitorCh:
 				logger.Info("⏹ Stopped position drawdown monitoring")
 				return
@@ -136,6 +148,7 @@ func (at *AutoTrader) checkPositionDrawdown() {
 				logger.Infof("✅ Drawdown close position succeeded: %s %s", symbol, side)
 				// Clear cache for this position after closing
 				at.ClearPeakPnLCache(symbol, side)
+				at.ClearTrailingStopCache(symbol, side)
 			}
 		} else if pricePnLPct > minProfit {
 			// Record situations close to close position condition (for debugging)
@@ -143,6 +156,167 @@ func (at *AutoTrader) checkPositionDrawdown() {
 				symbol, side, pricePnLPct, currentPnLPct, peakPnLPct, drawdownPct)
 		}
 	}
+}
+
+// updateTrailingStops tightens (never loosens) the resting stop-loss order
+// for every open position as price moves in its favor, sized off ATR14. Runs
+// from the same 1-minute ticker as checkPositionDrawdown so it shares one
+// goroutine instead of polling positions twice; the giveback close above
+// stays in place unchanged as a coarser backstop in case a trail update
+// fails to land (e.g. a transient exchange API error).
+func (at *AutoTrader) updateTrailingStops() {
+	positions, err := at.trader.GetPositions()
+	if err != nil {
+		logger.Infof("❌ Trailing stop: failed to get positions: %v", err)
+		return
+	}
+
+	for _, pos := range positions {
+		symbol, _ := pos["symbol"].(string)
+		side, _ := pos["side"].(string)
+		markPrice, _ := pos["markPrice"].(float64)
+		quantity, _ := pos["positionAmt"].(float64)
+		if quantity < 0 {
+			quantity = -quantity // Short position quantity is negative, convert to positive
+		}
+		if symbol == "" || quantity == 0 || markPrice <= 0 {
+			continue
+		}
+
+		at.lastATRCacheMutex.RLock()
+		atr := at.lastATRCache[symbol]
+		at.lastATRCacheMutex.RUnlock()
+		if atr <= 0 {
+			// No ATR sample yet for this symbol (e.g. position opened before
+			// the first AI cycle since restart refreshed it) - nothing to
+			// size a trail off, wait for the next AI cycle.
+			continue
+		}
+
+		posKey := symbol + "_" + side
+
+		at.trailingStopCacheMutex.Lock()
+		peakPrice, hasPeak := at.peakPriceCache[posKey]
+		peakPrice = nextPeakPrice(side, peakPrice, hasPeak, markPrice)
+		at.peakPriceCache[posKey] = peakPrice
+		currentStop, hasStop := at.currentStopCache[posKey]
+		at.trailingStopCacheMutex.Unlock()
+
+		if !hasStop {
+			// Cold cache entry - either a fresh deploy/restart with a
+			// pre-existing position, or the open-time SetStopLoss call
+			// failed. Adopt whatever is actually resting on the exchange
+			// first, so a real (possibly wider, deliberately-chosen) stop is
+			// never blind-replaced by a guess; only proceed to compare/place
+			// once we know the truth. A lookup failure skips this position
+			// for this tick rather than assuming "no stop exists".
+			realStop, found, lookupErr := at.restingStopPrice(symbol, side)
+			if lookupErr != nil {
+				logger.Infof("❌ Trailing stop: failed to read open orders for %s %s: %v", symbol, side, lookupErr)
+				continue
+			}
+			if found {
+				currentStop, hasStop = realStop, true
+				at.trailingStopCacheMutex.Lock()
+				at.currentStopCache[posKey] = realStop
+				at.trailingStopCacheMutex.Unlock()
+			}
+		}
+
+		candidateStop := trailingStopCandidate(side, peakPrice, atr)
+		if !isMoreFavorableStop(side, candidateStop, currentStop, hasStop) {
+			continue
+		}
+
+		positionSide := strings.ToUpper(side)
+		if err := at.trader.CancelStopLossOrders(symbol); err != nil {
+			logger.Infof("❌ Trailing stop: failed to cancel old stop for %s %s: %v", symbol, side, err)
+			continue
+		}
+		if err := at.trader.SetStopLoss(symbol, positionSide, quantity, candidateStop); err != nil {
+			logger.Infof("❌ Trailing stop: failed to set new stop for %s %s (old stop canceled, position now unprotected until next tick): %v", symbol, side, err)
+			at.trailingStopCacheMutex.Lock()
+			delete(at.currentStopCache, posKey)
+			at.trailingStopCacheMutex.Unlock()
+			continue
+		}
+
+		at.trailingStopCacheMutex.Lock()
+		at.currentStopCache[posKey] = candidateStop
+		at.trailingStopCacheMutex.Unlock()
+
+		logger.Infof("📈 Trailing stop tightened: %s %s | peak=%.6f atr14=%.6f | stop %.6f → %.6f",
+			symbol, side, peakPrice, atr, currentStop, candidateStop)
+	}
+}
+
+// nextPeakPrice returns the best price seen since entry: the running max for
+// a long, the running min for a short. hasPeak=false (no prior cache entry)
+// always adopts markPrice, since a freshly-tracked position has no history.
+func nextPeakPrice(side string, peak float64, hasPeak bool, markPrice float64) float64 {
+	if !hasPeak {
+		return markPrice
+	}
+	if side == "long" && markPrice > peak {
+		return markPrice
+	}
+	if side == "short" && markPrice < peak {
+		return markPrice
+	}
+	return peak
+}
+
+// trailingStopCandidate computes the ATR-offset stop price behind the peak:
+// below peak for a long, above peak for a short.
+func trailingStopCandidate(side string, peakPrice, atr float64) float64 {
+	if side == "long" {
+		return peakPrice - trailingStopATRMultiplier*atr
+	}
+	return peakPrice + trailingStopATRMultiplier*atr
+}
+
+// isMoreFavorableStop reports whether candidate tightens the stop compared to
+// current: higher for a long (less room below price), lower for a short
+// (less room above price). Any candidate is "more favorable" than no stop at
+// all (hasCurrent=false), so a naked position always gets one placed.
+func isMoreFavorableStop(side string, candidate, current float64, hasCurrent bool) bool {
+	if !hasCurrent {
+		return true
+	}
+	if side == "long" {
+		return candidate > current
+	}
+	return candidate < current
+}
+
+// restingStopPrice looks up the real STOP_MARKET order price for a position
+// side directly from the exchange, for seeding a cold trailing-stop cache.
+func (at *AutoTrader) restingStopPrice(symbol, side string) (price float64, found bool, err error) {
+	orders, err := at.trader.GetOpenOrders(symbol)
+	if err != nil {
+		return 0, false, err
+	}
+
+	positionSide := strings.ToUpper(side)
+	for _, o := range orders {
+		if o.Type == "STOP_MARKET" && strings.ToUpper(o.PositionSide) == positionSide && o.StopPrice > 0 {
+			return o.StopPrice, true, nil
+		}
+	}
+	return 0, false, nil
+}
+
+// ClearTrailingStopCache clears the ATR trailing-stop cache for a closed
+// position. Mirrors ClearPeakPnLCache; lastATRCache is intentionally left
+// alone since it is keyed by symbol (not symbol_side) and is naturally kept
+// fresh by the next AI cycle regardless of position state.
+func (at *AutoTrader) ClearTrailingStopCache(symbol, side string) {
+	at.trailingStopCacheMutex.Lock()
+	defer at.trailingStopCacheMutex.Unlock()
+
+	posKey := symbol + "_" + side
+	delete(at.peakPriceCache, posKey)
+	delete(at.currentStopCache, posKey)
 }
 
 // emergencyClosePosition emergency close position function

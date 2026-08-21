@@ -15,6 +15,11 @@ export interface AIProviderConfig {
   defaultModel: string
   apiUrl: string
   apiName: string
+  // True for providers authenticated outside of nofx entirely (e.g. a local
+  // CLI tool logged in via its own subscription flow) — there is no API key
+  // for the user to paste in. ModelConfigModal relaxes its "API key
+  // required" gates for any provider with this set.
+  noApiKeyRequired?: boolean
 }
 
 // Get friendly AI model display name
@@ -172,6 +177,12 @@ export const AI_PROVIDER_CONFIG: Record<string, AIProviderConfig> = {
     defaultModel: 'MiniMax-M2.7',
     apiUrl: 'https://platform.minimax.io',
     apiName: 'MiniMax',
+  },
+  codex_cli: {
+    defaultModel: 'gpt-5.6-sol',
+    apiUrl: 'https://developers.openai.com/codex/cli',
+    apiName: 'Codex CLI (local subscription login — no key needed here)',
+    noApiKeyRequired: true,
   },
 }
 

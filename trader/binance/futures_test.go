@@ -23,7 +23,7 @@ import (
 // Inherits TraderTestSuite and adds Binance Futures specific mock logic
 type BinanceFuturesTestSuite struct {
 	*testutil.TraderTestSuite // Embeds base test suite
-	mockServer              *httptest.Server
+	mockServer                *httptest.Server
 }
 
 // NewBinanceFuturesTestSuite Creates Binance Futures test suite
@@ -200,6 +200,36 @@ func NewBinanceFuturesTestSuite(t *testing.T) *BinanceFuturesTestSuite {
 				"positionSide":  r.FormValue("positionSide"),
 				"stopPrice":     r.FormValue("stopPrice"),
 				"workingType":   r.FormValue("workingType"),
+			}
+
+		// Mock CreateAlgoOrder - /fapi/v1/algoOrder (POST), used by
+		// SetStopLoss/SetTakeProfit. Enforces the mocked symbol's price
+		// precision the same way real Binance does (-1111), so a test can
+		// actually prove the caller rounds the trigger price first instead
+		// of just trusting a lenient mock to echo back whatever was sent.
+		case path == "/fapi/v1/algoOrder" && r.Method == "POST":
+			symbol := r.FormValue("symbol")
+			triggerPrice := r.FormValue("triggerPrice")
+			maxDecimals := 2 // matches BTCUSDT/ETHUSDT tickSize 0.01 above
+			if dot := strings.IndexByte(triggerPrice, '.'); dot >= 0 && len(triggerPrice)-dot-1 > maxDecimals {
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"code": -1111,
+					"msg":  "Precision is over the maximum defined for this asset.",
+				})
+				return
+			}
+			respBody = map[string]interface{}{
+				"algoId":        123456,
+				"clientAlgoId":  r.FormValue("clientAlgoId"),
+				"symbol":        symbol,
+				"side":          r.FormValue("side"),
+				"positionSide":  r.FormValue("positionSide"),
+				"orderType":     r.FormValue("type"),
+				"triggerPrice":  triggerPrice,
+				"algoStatus":    "WORKING",
+				"workingType":   r.FormValue("workingType"),
+				"closePosition": r.FormValue("closePosition") == "true",
 			}
 
 		// Mock CancelOrder - /fapi/v1/order (DELETE)
@@ -419,4 +449,28 @@ func TestGetBrOrderID(t *testing.T) {
 		assert.False(t, ids[id], "order ID should be unique")
 		ids[id] = true
 	}
+}
+
+// TestSetStopLoss_RoundsToSymbolPricePrecision pins down a real production
+// incident: an ATR-computed stop price (e.g. peak - 2.5*ATR) is an arbitrary
+// float with many decimals, and the mocked BTCUSDT tickSize (0.01, 2
+// decimals) rejects anything more precise with -1111 "Precision is over the
+// maximum defined for this asset" - exactly what happened live for ICPUSDT.
+// SetStopLoss/SetTakeProfit must round through FormatPrice before sending.
+func TestSetStopLoss_RoundsToSymbolPricePrecision(t *testing.T) {
+	suite := NewBinanceFuturesTestSuite(t)
+	defer suite.Cleanup()
+	trader := suite.Trader.(*FuturesTrader)
+
+	err := trader.SetStopLoss("BTCUSDT", "LONG", 0.01, 50000.123456789)
+	assert.NoError(t, err, "an over-precise price must be rounded to the symbol's tick size, not rejected")
+}
+
+func TestSetTakeProfit_RoundsToSymbolPricePrecision(t *testing.T) {
+	suite := NewBinanceFuturesTestSuite(t)
+	defer suite.Cleanup()
+	trader := suite.Trader.(*FuturesTrader)
+
+	err := trader.SetTakeProfit("BTCUSDT", "LONG", 0.01, 51000.987654321)
+	assert.NoError(t, err, "an over-precise price must be rounded to the symbol's tick size, not rejected")
 }

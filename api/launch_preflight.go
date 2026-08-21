@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"nofx/mcp"
 	"nofx/store"
 	"nofx/wallet"
 
@@ -194,6 +195,9 @@ func checkLaunchAIModel(model *store.AIModel) LaunchCheck {
 		check.Status = launchCheckStatusFailed
 		check.Code = "MODEL_DISABLED"
 		check.Message = fmt.Sprintf("AI model \"%s\" is disabled. Enable it first.", model.Name)
+	case !mcp.ProviderNeedsAPIKey(model.Provider):
+		check.Status = launchCheckStatusOK
+		check.Message = model.Name
 	case strings.TrimSpace(model.APIKey.String()) == "":
 		check.Status = launchCheckStatusFailed
 		check.Code = "MODEL_MISSING_CREDENTIALS"

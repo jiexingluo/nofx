@@ -18,3 +18,14 @@ func NewAIClientByProvider(name string, opts ...ClientOption) AIClient {
 	}
 	return factory(opts...)
 }
+
+// IsRegisteredProvider reports whether name has a registered client factory,
+// without constructing one. Used by store.AIModelStore.UpdateWithName to
+// recognize a bare catalog provider slug (e.g. "codex_cli") when creating a
+// brand-new model row, instead of guessing the provider by splitting the id
+// on "_" and taking the last segment - that heuristic silently mis-derives
+// "cli" for any provider whose own name contains an underscore.
+func IsRegisteredProvider(name string) bool {
+	_, ok := providerRegistry[name]
+	return ok
+}

@@ -260,6 +260,10 @@ func (s *Server) handleGetSupportedModels(c *gin.Context) {
 		{"id": "grok", "name": "Grok (xAI)", "provider": "grok", "defaultModel": "grok-3-latest"},
 		{"id": "kimi", "name": "Kimi (Moonshot)", "provider": "kimi", "defaultModel": "moonshot-v1-auto"},
 		{"id": "minimax", "name": "MiniMax", "provider": "minimax", "defaultModel": "MiniMax-M2.7"},
+		// Local subprocess provider — shells out to a `codex` CLI binary
+		// authenticated via a ChatGPT/Codex subscription login, not an API
+		// key. Registered in mcp/provider/codex_cli.go's init().
+		{"id": "codex_cli", "name": "Codex CLI (GPT-5.6)", "provider": "codex_cli", "defaultModel": "gpt-5.6-sol"},
 	}
 
 	c.JSON(http.StatusOK, supportedModels)

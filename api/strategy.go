@@ -733,7 +733,7 @@ func (s *Server) runRealAITest(userID, modelID, systemPrompt, userPrompt string)
 		return "", fmt.Errorf("AI model %s is not enabled", model.Name)
 	}
 
-	if model.APIKey == "" {
+	if model.APIKey == "" && mcp.ProviderNeedsAPIKey(model.Provider) {
 		return "", fmt.Errorf("AI model %s is missing API Key", model.Name)
 	}
 

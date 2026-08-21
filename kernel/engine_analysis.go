@@ -207,6 +207,21 @@ func fetchMarketDataWithStrategy(ctx *Context, engine *StrategyEngine) error {
 			logger.Infof("⚠️  Failed to fetch market data for position %s: %v", pos.Symbol, err)
 			continue
 		}
+		// Pin the displayed current_price to the position's own MarkPrice
+		// instead of whatever the klines happened to show at fetch time.
+		// Positions are read into ctx.Positions before this loop runs, and
+		// fetching timeframe data per symbol takes real time (network +
+		// indicator calc), so by the time this call returns, the two prices
+		// can genuinely differ - the AI has been observed in production
+		// noticing the mismatch mid-reasoning and burning effort guessing
+		// which one to trust. PriceChange1h/4h and the indicator series
+		// (EMA/RSI/MACD/ATR) are already computed from the kline series
+		// itself, not re-derived from CurrentPrice, so overriding this one
+		// summary field doesn't touch their accuracy - it only makes the
+		// number the AI reads agree with the position line for this symbol.
+		if pos.MarkPrice > 0 {
+			data.CurrentPrice = pos.MarkPrice
+		}
 		ctx.MarketDataMap[pos.Symbol] = data
 	}
 

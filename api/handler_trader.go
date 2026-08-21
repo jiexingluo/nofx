@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"nofx/logger"
+	"nofx/mcp"
 	"nofx/store"
 
 	"github.com/gin-gonic/gin"
@@ -370,7 +371,7 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		), "trader.create.model_disabled", mapStringPairs("model_name", model.Name))
 		return
 	}
-	if model.APIKey == "" {
+	if model.APIKey == "" && mcp.ProviderNeedsAPIKey(model.Provider) {
 		SafeBadRequestWithDetails(c, formatTraderCreationError(
 			fmt.Sprintf("AI model \"%s\" is missing an API Key or payment credentials", model.Name),
 			"Please go to \"Settings > Model Config\" to complete the model credentials, then create the bot again",

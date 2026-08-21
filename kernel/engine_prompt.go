@@ -601,6 +601,10 @@ func writeHardConstraints(sb *strings.Builder, accountEquity float64, riskContro
 		sb.WriteString("- Low confidence (60-69): use 30-50%% of the position value limit\n")
 		sb.WriteString(fmt.Sprintf("- Example: equity %.0f × %.1fx = max %.0f USDT\n", accountEquity, exampleRatio, accountEquity*exampleRatio))
 		sb.WriteString("- **DO NOT** just use available_balance as position_size_usd. Use the Position Value Limit!\n\n")
+		sb.WriteString("`risk_usd` formula (do not derive this any other way):\n")
+		sb.WriteString("`risk_usd = position_size_usd × |entry_price - stop_loss| / entry_price`\n")
+		sb.WriteString("Leverage is NOT a factor in this formula. `position_size_usd` is already the full notional exposure; leverage only changes margin and liquidation distance, not the dollar loss for a given price move.\n")
+		sb.WriteString("Example: position_size_usd=300, entry=100, stop_loss=98 (2% away) → risk_usd = 300 × 0.02 = 6, regardless of whether leverage is 3x or 20x.\n\n")
 	} else {
 		sb.WriteString("## Position Sizing Guidance\n")
 		sb.WriteString("Calculate `position_size_usd` from your confidence and the Position Value Limits above:\n")
@@ -609,6 +613,10 @@ func writeHardConstraints(sb *strings.Builder, accountEquity float64, riskContro
 		sb.WriteString("- Low confidence (60-69): use 30-50%% of the position value limit\n")
 		sb.WriteString(fmt.Sprintf("- Example: equity %.0f × %.1fx = max %.0f USDT\n", accountEquity, exampleRatio, accountEquity*exampleRatio))
 		sb.WriteString("- **DO NOT** just use available_balance as position_size_usd. Use the Position Value Limit!\n\n")
+		sb.WriteString("`risk_usd` formula (do not derive this any other way):\n")
+		sb.WriteString("`risk_usd = position_size_usd × |entry_price - stop_loss| / entry_price`\n")
+		sb.WriteString("Leverage is NOT a factor in this formula. `position_size_usd` is already the full notional exposure; leverage only changes margin and liquidation distance, not the dollar loss for a given price move.\n")
+		sb.WriteString("Example: position_size_usd=300, entry=100, stop_loss=98 (2% away) → risk_usd = 300 × 0.02 = 6, regardless of whether leverage is 3x or 20x.\n\n")
 	}
 }
 
@@ -763,44 +771,32 @@ func (e *StrategyEngine) writeAvailableIndicators(sb *strings.Builder, zh bool) 
 func (e *StrategyEngine) BuildUserPrompt(ctx *Context) string {
 	var sb strings.Builder
 
-	// System status
-	sb.WriteString(fmt.Sprintf("Time: %s | Period: #%d | Runtime: %d minutes\n\n",
-		ctx.CurrentTime, ctx.CallCount, ctx.RuntimeMinutes))
+	// Section ordering below is deliberate, not cosmetic: providers with
+	// automatic prompt caching (e.g. DeepSeek's Context Caching on Disk)
+	// match on the exact byte prefix of the request, so a single early
+	// token that differs from the previous call - a timestamp, a live
+	// price - forces a full recompute of everything after it, no matter
+	// how stable the later content is. Sections here run from "changes
+	// almost never" to "changes essentially every cycle by design" so the
+	// longest possible prefix has a chance to hit cache. This still can't
+	// make the market-data section (the bulk of the prompt) cacheable -
+	// that's genuinely fresh data every cycle - but it stops that dominant
+	// volatile content from poisoning the cache for the smaller sections
+	// that used to sit needlessly behind it.
 
-	// BTC market
-	if btcData, hasBTC := ctx.MarketDataMap["BTCUSDT"]; hasBTC {
-		sb.WriteString(fmt.Sprintf("BTC: %.2f (1h: %+.2f%%, 4h: %+.2f%%) | MACD: %.4f | RSI: %.2f\n\n",
-			btcData.CurrentPrice, btcData.PriceChange1h, btcData.PriceChange4h,
-			btcData.CurrentMACD, btcData.CurrentRSI7))
+	// Decision weights - only changes when the strategy config itself is
+	// edited, effectively never within a run. Most stable section, so it
+	// goes first. (Previously only wired into the unused formatter.go/
+	// PromptBuilder path, so the AI never actually saw it. ctx.DecisionWeights
+	// is always non-nil - auto_trader_loop.go sets it unconditionally.)
+	if w := ctx.DecisionWeights; w != nil {
+		sb.WriteString(fmt.Sprintf("## Decision Weights\n\nTechnical %d%% | Sentiment %d%% | Valuation %d%% | Fundamental %d%%\n\n",
+			w.TechnicalWeight, w.SentimentWeight, w.ValuationWeight, w.FundamentalWeight))
 	}
 
-	// Account information
-	sb.WriteString(fmt.Sprintf("Account: Equity %.2f | Balance %.2f (%.1f%%) | PnL %+.2f%% | Margin %.1f%% | Positions %d\n\n",
-		ctx.Account.TotalEquity,
-		ctx.Account.AvailableBalance,
-		(ctx.Account.AvailableBalance/ctx.Account.TotalEquity)*100,
-		ctx.Account.TotalPnLPct,
-		ctx.Account.MarginUsedPct,
-		ctx.Account.PositionCount))
-
-	// Recently completed orders (placed before positions to ensure visibility)
-	if len(ctx.RecentOrders) > 0 {
-		sb.WriteString("## Recent Completed Trades\n")
-		for i, order := range ctx.RecentOrders {
-			resultStr := "Profit"
-			if order.RealizedPnL < 0 {
-				resultStr = "Loss"
-			}
-			sb.WriteString(fmt.Sprintf("%d. %s %s | Entry %.4f Exit %.4f | %s: %+.2f USDT (%+.2f%%) | %s→%s (%s)\n",
-				i+1, order.Symbol, order.Side,
-				order.EntryPrice, order.ExitPrice,
-				resultStr, order.RealizedPnL, order.PnLPct,
-				order.EntryTime, order.ExitTime, order.HoldDuration))
-		}
-		sb.WriteString("\n")
-	}
-
-	// Historical trading statistics (helps AI understand past performance)
+	// Historical trading statistics (helps AI understand past performance) -
+	// only changes when a trade closes, which happens far less often than
+	// once per cycle at this strategy's hold times.
 	if ctx.TradingStats != nil && ctx.TradingStats.TotalTrades > 0 {
 		// Get language from strategy config
 		lang := e.GetLanguage()
@@ -860,6 +856,47 @@ func (e *StrategyEngine) BuildUserPrompt(ctx *Context) string {
 		}
 		sb.WriteString("\n")
 	}
+
+	// Recently completed orders - only changes when a trade closes, same as
+	// the stats above. Last of the "rarely changes" sections; everything
+	// below this point changes essentially every cycle.
+	if len(ctx.RecentOrders) > 0 {
+		sb.WriteString("## Recent Completed Trades\n")
+		for i, order := range ctx.RecentOrders {
+			resultStr := "Profit"
+			if order.RealizedPnL < 0 {
+				resultStr = "Loss"
+			}
+			sb.WriteString(fmt.Sprintf("%d. %s %s | Entry %.4f Exit %.4f | %s: %+.2f USDT (%+.2f%%) | %s→%s (%s)\n",
+				i+1, order.Symbol, order.Side,
+				order.EntryPrice, order.ExitPrice,
+				resultStr, order.RealizedPnL, order.PnLPct,
+				order.EntryTime, order.ExitTime, order.HoldDuration))
+		}
+		sb.WriteString("\n")
+	}
+
+	// System status - changes every cycle by definition (timestamp, period
+	// counter, runtime clock), so nothing after this point can benefit from
+	// prefix caching regardless of how it's ordered.
+	sb.WriteString(fmt.Sprintf("Time: %s | Period: #%d | Runtime: %d minutes\n\n",
+		ctx.CurrentTime, ctx.CallCount, ctx.RuntimeMinutes))
+
+	// BTC market
+	if btcData, hasBTC := ctx.MarketDataMap["BTCUSDT"]; hasBTC {
+		sb.WriteString(fmt.Sprintf("BTC: %.2f (1h: %+.2f%%, 4h: %+.2f%%) | MACD: %.4f | RSI: %.2f\n\n",
+			btcData.CurrentPrice, btcData.PriceChange1h, btcData.PriceChange4h,
+			btcData.CurrentMACD, btcData.CurrentRSI7))
+	}
+
+	// Account information
+	sb.WriteString(fmt.Sprintf("Account: Equity %.2f | Balance %.2f (%.1f%%) | PnL %+.2f%% | Margin %.1f%% | Positions %d\n\n",
+		ctx.Account.TotalEquity,
+		ctx.Account.AvailableBalance,
+		(ctx.Account.AvailableBalance/ctx.Account.TotalEquity)*100,
+		ctx.Account.TotalPnLPct,
+		ctx.Account.MarginUsedPct,
+		ctx.Account.PositionCount))
 
 	// Position information
 	if len(ctx.Positions) > 0 {

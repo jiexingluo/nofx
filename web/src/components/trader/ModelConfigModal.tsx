@@ -94,7 +94,13 @@ export function ModelConfigModal({
     if (!selectedModelId) return
     // Editing with a stored key: an empty key means "keep the existing one"
     // (the backend preserves the stored key when api_key is empty).
-    if (!apiKey.trim() && !(editingModelId && hasExistingKey)) return
+    // Some providers (e.g. codex_cli) authenticate outside of nofx entirely
+    // and have no API key at all — an empty key is the expected, final value
+    // for them, not a placeholder for "unchanged".
+    const noKeyNeeded =
+      AI_PROVIDER_CONFIG[selectedModel?.provider ?? '']?.noApiKeyRequired
+    if (!noKeyNeeded && !apiKey.trim() && !(editingModelId && hasExistingKey))
+      return
     onSave(
       selectedModelId,
       apiKey.trim(),
@@ -1181,7 +1187,14 @@ function StandardProviderConfigForm({
 }) {
   const [isTesting, setIsTesting] = useState(false)
 
+  const noKeyNeeded =
+    AI_PROVIDER_CONFIG[selectedModel.provider]?.noApiKeyRequired
+
   const handleTestConnection = async () => {
+    // Providers with no API key (e.g. codex_cli) have no connection for
+    // this endpoint to meaningfully test — the button is disabled for them
+    // (see below), but guard here too in case it's ever reached anyway.
+    if (noKeyNeeded) return
     if (!apiKey.trim()) {
       toast.error(
         language === 'zh'
@@ -1332,7 +1345,9 @@ function StandardProviderConfigForm({
             border: '1px solid rgba(26,24,19,0.14)',
             color: '#1A1813',
           }}
-          required={!(editingModelId && selectedModel.has_api_key)}
+          required={
+            !noKeyNeeded && !(editingModelId && selectedModel.has_api_key)
+          }
         />
       </div>
 
@@ -1451,7 +1466,14 @@ function StandardProviderConfigForm({
         <button
           type="button"
           onClick={handleTestConnection}
-          disabled={isTesting || !apiKey.trim()}
+          disabled={noKeyNeeded || isTesting || !apiKey.trim()}
+          title={
+            noKeyNeeded
+              ? language === 'zh'
+                ? '此模型无需测试连接'
+                : 'Not applicable for this provider'
+              : undefined
+          }
           className="flex-1 px-4 py-3 rounded-xl text-sm font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed"
           style={{
             background: 'rgba(46, 139, 87, 0.12)',
@@ -1467,7 +1489,9 @@ function StandardProviderConfigForm({
           type="submit"
           disabled={
             !selectedModel ||
-            (!apiKey.trim() && !(editingModelId && selectedModel.has_api_key))
+            (!noKeyNeeded &&
+              !apiKey.trim() &&
+              !(editingModelId && selectedModel.has_api_key))
           }
           className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-bold transition-all hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed"
           style={{ background: '#E0483B', color: '#fff' }}

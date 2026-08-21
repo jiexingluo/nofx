@@ -150,9 +150,22 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 	// Set stop loss and take profit
 	if err := at.trader.SetStopLoss(decision.Symbol, "LONG", quantity, decision.StopLoss); err != nil {
 		logger.Infof("  ⚠ Failed to set stop loss: %v", err)
+	} else {
+		// Seed the ATR trailing-stop cache from this AI-decided stop so the
+		// 1-minute monitor only ever tightens it from here, never treats a
+		// freshly-opened position as having no stop at all.
+		at.trailingStopCacheMutex.Lock()
+		at.peakPriceCache[posKey] = marketData.CurrentPrice
+		at.currentStopCache[posKey] = decision.StopLoss
+		at.trailingStopCacheMutex.Unlock()
 	}
 	if err := at.trader.SetTakeProfit(decision.Symbol, "LONG", quantity, decision.TakeProfit); err != nil {
 		logger.Infof("  ⚠ Failed to set take profit: %v", err)
+	}
+	if marketData.LongerTermContext != nil && marketData.LongerTermContext.ATR14 > 0 {
+		at.lastATRCacheMutex.Lock()
+		at.lastATRCache[decision.Symbol] = marketData.LongerTermContext.ATR14
+		at.lastATRCacheMutex.Unlock()
 	}
 
 	return nil
@@ -266,9 +279,22 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 	// Set stop loss and take profit
 	if err := at.trader.SetStopLoss(decision.Symbol, "SHORT", quantity, decision.StopLoss); err != nil {
 		logger.Infof("  ⚠ Failed to set stop loss: %v", err)
+	} else {
+		// Seed the ATR trailing-stop cache from this AI-decided stop so the
+		// 1-minute monitor only ever tightens it from here, never treats a
+		// freshly-opened position as having no stop at all.
+		at.trailingStopCacheMutex.Lock()
+		at.peakPriceCache[posKey] = marketData.CurrentPrice
+		at.currentStopCache[posKey] = decision.StopLoss
+		at.trailingStopCacheMutex.Unlock()
 	}
 	if err := at.trader.SetTakeProfit(decision.Symbol, "SHORT", quantity, decision.TakeProfit); err != nil {
 		logger.Infof("  ⚠ Failed to set take profit: %v", err)
+	}
+	if marketData.LongerTermContext != nil && marketData.LongerTermContext.ATR14 > 0 {
+		at.lastATRCacheMutex.Lock()
+		at.lastATRCache[decision.Symbol] = marketData.LongerTermContext.ATR14
+		at.lastATRCacheMutex.Unlock()
 	}
 
 	return nil
@@ -333,6 +359,7 @@ func (at *AutoTrader) executeCloseLongWithRecord(decision *kernel.Decision, acti
 
 	// Record order to database and poll for confirmation
 	at.recordAndConfirmOrder(order, decision.Symbol, "close_long", quantity, marketData.CurrentPrice, 0, entryPrice)
+	at.ClearTrailingStopCache(decision.Symbol, "long")
 
 	logger.Infof("  ✓ Position closed successfully")
 	return nil
@@ -397,6 +424,7 @@ func (at *AutoTrader) executeCloseShortWithRecord(decision *kernel.Decision, act
 
 	// Record order to database and poll for confirmation
 	at.recordAndConfirmOrder(order, decision.Symbol, "close_short", quantity, marketData.CurrentPrice, 0, entryPrice)
+	at.ClearTrailingStopCache(decision.Symbol, "short")
 
 	logger.Infof("  ✓ Position closed successfully")
 	return nil

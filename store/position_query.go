@@ -64,8 +64,6 @@ func (s *PositionStore) GetFullStats(traderID string, startingEquity float64) (*
 // trader IDs plus optional legacy trader ID patterns. startingEquity is the
 // real account baseline for the drawdown calculation; pass 0 when unknown.
 func (s *PositionStore) GetFullStatsByTraderFilters(traderIDs []string, traderIDPatterns []string, startingEquity float64) (*TraderStats, error) {
-	stats := &TraderStats{}
-
 	var positions []TraderPosition
 	err := s.closedPositionsByTraderFilters(traderIDs, traderIDPatterns).
 		Order("exit_time ASC").
@@ -73,6 +71,41 @@ func (s *PositionStore) GetFullStatsByTraderFilters(traderIDs []string, traderID
 	if err != nil {
 		return nil, fmt.Errorf("failed to query position statistics: %w", err)
 	}
+
+	return computeTraderStats(positions, startingEquity), nil
+}
+
+// GetRecentStats gets trading statistics scoped to the most recent N closed
+// trades for a single trader, rather than the trader's entire history. A
+// long-running trader's current performance is otherwise diluted (or hidden
+// entirely behind) old trades from a since-changed strategy config, which
+// reads to the AI as stale/contradictory context. limit should match whatever
+// window the caller is also showing as a recent-trades list, so the stats and
+// the list the AI sees agree with each other. startingEquity is the real
+// account baseline for the drawdown calculation; pass 0 when unknown.
+func (s *PositionStore) GetRecentStats(traderID string, startingEquity float64, limit int) (*TraderStats, error) {
+	var positions []TraderPosition
+	err := s.db.Where("trader_id = ? AND status = ?", traderID, "CLOSED").
+		Order("exit_time DESC").
+		Limit(limit).
+		Find(&positions).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to query recent position statistics: %w", err)
+	}
+
+	// computeTraderStats builds the Sharpe/drawdown equity curve by walking
+	// forward in time, so restore chronological order after the DESC fetch.
+	for i, j := 0, len(positions)-1; i < j; i, j = i+1, j-1 {
+		positions[i], positions[j] = positions[j], positions[i]
+	}
+
+	return computeTraderStats(positions, startingEquity), nil
+}
+
+// computeTraderStats aggregates a slice of closed positions, already in
+// chronological (oldest-first) order, into summary trading statistics.
+func computeTraderStats(positions []TraderPosition, startingEquity float64) *TraderStats {
+	stats := &TraderStats{}
 
 	var pnls []float64
 	var totalWin, totalLoss float64
@@ -111,7 +144,7 @@ func (s *PositionStore) GetFullStatsByTraderFilters(traderIDs []string, traderID
 		stats.MaxDrawdownPct = calculateMaxDrawdownFromPnls(pnls, startingEquity)
 	}
 
-	return stats, nil
+	return stats
 }
 
 // RecentTrade recent trade record

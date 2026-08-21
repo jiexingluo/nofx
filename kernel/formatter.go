@@ -235,9 +235,6 @@ func formatCurrentPositionsZH(ctx *Context) string {
 	sb.WriteString("## Current Positions\n\n")
 
 	for i, pos := range ctx.Positions {
-		// Calculate drawdown
-		drawdown := pos.UnrealizedPnLPct - pos.PeakPnLPct
-
 		sb.WriteString(fmt.Sprintf("%d. %s %s | ", i+1, pos.Symbol, strings.ToUpper(pos.Side)))
 		sb.WriteString(fmt.Sprintf("Entry %.4f Current %.4f | ", pos.EntryPrice, pos.MarkPrice))
 		sb.WriteString(fmt.Sprintf("Quantity %.4f | ", pos.Quantity))
@@ -248,16 +245,6 @@ func formatCurrentPositionsZH(ctx *Context) string {
 		sb.WriteString(fmt.Sprintf("Leverage %dx | ", pos.Leverage))
 		sb.WriteString(fmt.Sprintf("Margin %.0f USDT | ", pos.MarginUsed))
 		sb.WriteString(fmt.Sprintf("Liq Price %.4f\n", pos.LiquidationPrice))
-
-		// Add analysis hints
-		if drawdown < -0.30*pos.PeakPnLPct && pos.PeakPnLPct > 0.02 {
-			sb.WriteString(fmt.Sprintf("   ⚠️ **Take-Profit Hint**: Current PnL retraced from peak %.2f%% to %.2f%%, drawdown %.2f%%, consider taking profit\n",
-				pos.PeakPnLPct, pos.UnrealizedPnLPct, (drawdown/pos.PeakPnLPct)*100))
-		}
-
-		if pos.UnrealizedPnLPct < -4.0 {
-			sb.WriteString("   ⚠️ **Stop-Loss Hint**: Loss approaching the -5% stop-loss line, consider stopping out\n")
-		}
 
 		// Show current price (if market data available)
 		if ctx.MarketDataMap != nil {
@@ -502,8 +489,6 @@ func formatCurrentPositionsEN(ctx *Context) string {
 	sb.WriteString("## Current Positions\n\n")
 
 	for i, pos := range ctx.Positions {
-		drawdown := pos.UnrealizedPnLPct - pos.PeakPnLPct
-
 		sb.WriteString(fmt.Sprintf("%d. %s %s | ", i+1, pos.Symbol, strings.ToUpper(pos.Side)))
 		sb.WriteString(fmt.Sprintf("Entry %.4f Current %.4f | ", pos.EntryPrice, pos.MarkPrice))
 		sb.WriteString(fmt.Sprintf("Qty %.4f | ", pos.Quantity))
@@ -514,16 +499,6 @@ func formatCurrentPositionsEN(ctx *Context) string {
 		sb.WriteString(fmt.Sprintf("Leverage %dx | ", pos.Leverage))
 		sb.WriteString(fmt.Sprintf("Margin %.0f USDT | ", pos.MarginUsed))
 		sb.WriteString(fmt.Sprintf("Liq Price %.4f\n", pos.LiquidationPrice))
-
-		// Analysis hints
-		if drawdown < -0.30*pos.PeakPnLPct && pos.PeakPnLPct > 0.02 {
-			sb.WriteString(fmt.Sprintf("   ⚠️ **Take Profit Alert**: PnL dropped from peak %.2f%% to %.2f%%, drawdown %.2f%%, consider taking profit\n",
-				pos.PeakPnLPct, pos.UnrealizedPnLPct, (drawdown/pos.PeakPnLPct)*100))
-		}
-
-		if pos.UnrealizedPnLPct < -4.0 {
-			sb.WriteString("   ⚠️ **Stop Loss Alert**: Loss approaching -5% threshold, consider cutting loss\n")
-		}
 
 		if ctx.MarketDataMap != nil {
 			if mdata, ok := ctx.MarketDataMap[pos.Symbol]; ok {

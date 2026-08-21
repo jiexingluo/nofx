@@ -664,13 +664,23 @@ func (t *FuturesTrader) SetStopLoss(symbol string, positionSide string, quantity
 		posSide = futures.PositionSideTypeShort
 	}
 
+	// Round to the symbol's actual price precision - Binance rejects a
+	// trigger price with more decimals than its tick size allows (-1111
+	// "Precision is over the maximum defined for this asset"), which a raw
+	// %.8f of an arbitrary computed price (e.g. peak - N*ATR) can easily hit
+	// even though a directly AI-provided price rarely does.
+	triggerPriceStr, err := t.FormatPrice(symbol, stopPrice)
+	if err != nil {
+		triggerPriceStr = fmt.Sprintf("%.8f", stopPrice)
+	}
+
 	// Use new Algo Order API
-	_, err := t.client.NewCreateAlgoOrderService().
+	_, err = t.client.NewCreateAlgoOrderService().
 		Symbol(symbol).
 		Side(side).
 		PositionSide(posSide).
 		Type(futures.AlgoOrderTypeStopMarket).
-		TriggerPrice(fmt.Sprintf("%.8f", stopPrice)).
+		TriggerPrice(triggerPriceStr).
 		WorkingType(futures.WorkingTypeContractPrice).
 		ClosePosition(true).
 		ClientAlgoId(getBrOrderID()).
@@ -698,13 +708,19 @@ func (t *FuturesTrader) SetTakeProfit(symbol string, positionSide string, quanti
 		posSide = futures.PositionSideTypeShort
 	}
 
+	// Round to the symbol's actual price precision - see SetStopLoss for why.
+	triggerPriceStr, err := t.FormatPrice(symbol, takeProfitPrice)
+	if err != nil {
+		triggerPriceStr = fmt.Sprintf("%.8f", takeProfitPrice)
+	}
+
 	// Use new Algo Order API
-	_, err := t.client.NewCreateAlgoOrderService().
+	_, err = t.client.NewCreateAlgoOrderService().
 		Symbol(symbol).
 		Side(side).
 		PositionSide(posSide).
 		Type(futures.AlgoOrderTypeTakeProfitMarket).
-		TriggerPrice(fmt.Sprintf("%.8f", takeProfitPrice)).
+		TriggerPrice(triggerPriceStr).
 		WorkingType(futures.WorkingTypeContractPrice).
 		ClosePosition(true).
 		ClientAlgoId(getBrOrderID()).

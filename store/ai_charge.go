@@ -8,12 +8,19 @@ import (
 
 // AICharge represents a single AI call charge record
 type AICharge struct {
-	ID        int64     `gorm:"primaryKey;autoIncrement" json:"id"`
-	TraderID  string    `gorm:"column:trader_id;not null;index:idx_ai_charges_trader" json:"trader_id"`
-	Model     string    `gorm:"column:model;not null" json:"model"`
-	Provider  string    `gorm:"column:provider;not null" json:"provider"`
-	CostUSD   float64   `gorm:"column:cost_usd;not null" json:"cost_usd"`
-	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`
+	ID       int64   `gorm:"primaryKey;autoIncrement" json:"id"`
+	TraderID string  `gorm:"column:trader_id;not null;index:idx_ai_charges_trader" json:"trader_id"`
+	Model    string  `gorm:"column:model;not null" json:"model"`
+	Provider string  `gorm:"column:provider;not null" json:"provider"`
+	CostUSD  float64 `gorm:"column:cost_usd;not null" json:"cost_usd"`
+	// PromptTokens/CompletionTokens/PromptCacheHitTokens are 0 when the
+	// client didn't report usage for this call (e.g. models/providers this
+	// codebase only prices with the flat per-call estimate) - do not treat
+	// 0 as "no tokens were actually used," only as "usage wasn't available."
+	PromptTokens         int       `gorm:"column:prompt_tokens;not null;default:0" json:"prompt_tokens"`
+	CompletionTokens     int       `gorm:"column:completion_tokens;not null;default:0" json:"completion_tokens"`
+	PromptCacheHitTokens int       `gorm:"column:prompt_cache_hit_tokens;not null;default:0" json:"prompt_cache_hit_tokens"`
+	CreatedAt            time.Time `gorm:"autoCreateTime" json:"created_at"`
 }
 
 func (AICharge) TableName() string { return "ai_charges" }
@@ -40,10 +47,12 @@ func GetModelPrice(model string) float64 {
 	return 0.01 // default fallback
 }
 
-// modelTokenPrices maps model → USD per 1M input/output tokens, mirroring the
-// claw402 gateway pricing config (providers/*.yaml). Used to derive the actual
+// modelTokenPrices maps model → USD per 1M tokens, mirroring the claw402
+// gateway pricing config (providers/*.yaml): In (full-price/cache-miss
+// prompt tokens) and Out (completion tokens). Used to derive the actual
 // upto-settled cost from streamed token usage, where the gateway cannot
-// deliver the settlement header (SSE headers are flushed before usage is known).
+// deliver the settlement header (SSE headers are flushed before usage is
+// known).
 var modelTokenPrices = map[string]struct{ In, Out float64 }{
 	"gpt-5.6":           {5, 30},
 	"gpt-5.6-terra":     {2.5, 15},
@@ -55,6 +64,21 @@ var modelTokenPrices = map[string]struct{ In, Out float64 }{
 	"deepseek":          {0.27, 1.1},
 	"deepseek-reasoner": {0.55, 2.19},
 	"glm-5":             {0.6, 2},
+}
+
+// modelCacheHitPrices maps model → USD per 1M prompt tokens served from the
+// provider's own automatic prompt cache (e.g. DeepSeek's Context Caching on
+// Disk - enabled by default, no integration required, billed automatically
+// at this reduced rate whenever a request's prefix matches a prior one).
+// Deliberately separate from modelTokenPrices above: only models we have a
+// verified, current cache-hit rate for belong here. Absent = ComputeUsageCostWithCache
+// treats cache-hit tokens at the same price as cache-miss ones for that
+// model (i.e. assumes no discount rather than guessing at one), so adding
+// an entry can only ever lower a previously-overstated cost, never invent
+// savings that aren't real.
+var modelCacheHitPrices = map[string]float64{
+	"deepseek-v4-flash": 0.0028,
+	"deepseek-v4-pro":   0.003625,
 }
 
 // Gateway upto settlement formula constants (see claw402 token_estimate
@@ -73,6 +97,29 @@ func ComputeUsageCost(model string, promptTokens, completionTokens int) (float64
 		return 0, false
 	}
 	cost := (float64(promptTokens)*p.In + float64(completionTokens)*p.Out) / 1e6 * uptoSafetyMargin
+	if cost < uptoMinPriceUSD {
+		cost = uptoMinPriceUSD
+	}
+	return cost, true
+}
+
+// ComputeUsageCostWithCache is ComputeUsageCost split by whether the
+// provider's own automatic prompt caching served the prompt tokens from
+// cache. cacheHitTokens+cacheMissTokens should sum to the call's total
+// prompt tokens; pass cacheHitTokens=0 and the full prompt token count as
+// cacheMissTokens when the caller doesn't know the split (e.g. a provider
+// that doesn't report it), which reduces to the same result as
+// ComputeUsageCost. ok is false for models without a token price entry.
+func ComputeUsageCostWithCache(model string, cacheHitTokens, cacheMissTokens, completionTokens int) (float64, bool) {
+	p, ok := modelTokenPrices[model]
+	if !ok {
+		return 0, false
+	}
+	hitPrice := p.In // no verified discount for this model - price hits same as misses
+	if discounted, hasDiscount := modelCacheHitPrices[model]; hasDiscount {
+		hitPrice = discounted
+	}
+	cost := (float64(cacheHitTokens)*hitPrice + float64(cacheMissTokens)*p.In + float64(completionTokens)*p.Out) / 1e6 * uptoSafetyMargin
 	if cost < uptoMinPriceUSD {
 		cost = uptoMinPriceUSD
 	}
@@ -102,11 +149,23 @@ func (s *AIChargeStore) Record(traderID, model, provider string) error {
 // settled amount reported by the payment gateway (upto scheme) — instead of
 // the flat per-call estimate from modelPrices.
 func (s *AIChargeStore) RecordWithCost(traderID, model, provider string, costUSD float64) error {
+	return s.RecordWithUsage(traderID, model, provider, costUSD, 0, 0, 0)
+}
+
+// RecordWithUsage records a charge alongside the raw token usage that
+// produced it, so cache-hit rate is directly queryable later instead of
+// only ever being reflected (invisibly) inside costUSD. Pass zeros for
+// promptTokens/completionTokens/promptCacheHitTokens when usage wasn't
+// available for this call - RecordWithCost does exactly that.
+func (s *AIChargeStore) RecordWithUsage(traderID, model, provider string, costUSD float64, promptTokens, completionTokens, promptCacheHitTokens int) error {
 	charge := &AICharge{
-		TraderID: traderID,
-		Model:    model,
-		Provider: provider,
-		CostUSD:  costUSD,
+		TraderID:             traderID,
+		Model:                model,
+		Provider:             provider,
+		CostUSD:              costUSD,
+		PromptTokens:         promptTokens,
+		CompletionTokens:     completionTokens,
+		PromptCacheHitTokens: promptCacheHitTokens,
 	}
 	return s.db.Create(charge).Error
 }

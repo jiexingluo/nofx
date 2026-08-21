@@ -20,13 +20,13 @@ type Config struct {
 
 	// Behavior configuration
 	MaxTokens   int
-	MaxContext  int     // Model's max context window in tokens (0 = no limit)
+	MaxContext  int // Model's max context window in tokens (0 = no limit)
 	Temperature float64
 	UseFullURL  bool
 
 	// Retry configuration
-	MaxRetries     int
-	RetryWaitBase  time.Duration
+	MaxRetries      int
+	RetryWaitBase   time.Duration
 	RetryableErrors []string
 
 	// Timeout configuration
@@ -39,18 +39,27 @@ type Config struct {
 
 // DefaultConfig returns default configuration
 func DefaultConfig() *Config {
+	// AI_TIMEOUT_SECONDS overrides the 120s default (mirrors AI_MAX_TOKENS
+	// below) - the non-streaming Call() path blocks on io.ReadAll(resp.Body)
+	// for the model's ENTIRE generation time (reasoning + answer), not just
+	// connection setup. Observed failing at exactly ~120s in production on a
+	// large (~100K+ char) prompt, both right after a restart and 9+ hours
+	// into stable operation - a response-time-budget issue, not a cold-start
+	// one, so it needs real headroom rather than a code fix.
+	timeout := time.Duration(getEnvInt("AI_TIMEOUT_SECONDS", int(DefaultTimeout/time.Second))) * time.Second
+
 	return &Config{
 		// Default values
-		MaxTokens:      getEnvInt("AI_MAX_TOKENS", 2000),
-		Temperature:    MCPClientTemperature,
-		MaxRetries:     MaxRetryTimes,
-		RetryWaitBase:  2 * time.Second,
-		Timeout:        DefaultTimeout,
+		MaxTokens:       getEnvInt("AI_MAX_TOKENS", 2000),
+		Temperature:     MCPClientTemperature,
+		MaxRetries:      MaxRetryTimes,
+		RetryWaitBase:   2 * time.Second,
+		Timeout:         timeout,
 		RetryableErrors: retryableErrors,
 
 		// Default dependencies (use global logger)
 		Logger:     logger.NewMCPLogger(),
-		HTTPClient: security.SafeHTTPClient(DefaultTimeout),
+		HTTPClient: security.SafeHTTPClient(timeout),
 	}
 }
 

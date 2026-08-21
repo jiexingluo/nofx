@@ -7,6 +7,7 @@ import (
 	"nofx/kernel"
 	"nofx/logger"
 	"nofx/market"
+	"nofx/mcp"
 	"nofx/mcp/payment"
 	"nofx/provider/hyperliquid"
 	"nofx/store"
@@ -135,22 +136,43 @@ func (at *AutoTrader) runCycle() error {
 	// Use the effective model name (custom model, e.g. "gpt-5.6") so the
 	// per-call price lookup matches what was actually invoked — at.aiModel is
 	// the provider id (e.g. "claw402") and would fall back to the default price.
-	// Prefer the gateway-reported settled amount (upto scheme) over the flat
-	// catalog estimate when the client exposes it.
+	// Cost priority: (1) the gateway-reported settled amount (upto scheme,
+	// claw402 only) (2) computed from this call's own real token usage,
+	// cache-hit-aware where the provider reports it (direct providers like
+	// DeepSeek) (3) the flat per-call catalog estimate, when neither of the
+	// above is available. Usage (if any) is always stored alongside the
+	// charge regardless of which tier priced it, so cache-hit rate is
+	// directly queryable later instead of only ever affecting costUSD invisibly.
 	if aiDecision != nil && at.store != nil {
 		chargeModel := at.config.CustomModelName
 		if chargeModel == "" {
 			chargeModel = at.aiModel
 		}
-		var chargeErr error
+
+		var usage *mcp.TokenUsage
+		if embedder, ok := at.mcpClient.(mcp.ClientEmbedder); ok {
+			usage = embedder.BaseClient().LastCallUsage
+		}
+
+		costUSD := store.GetModelPrice(chargeModel)
 		if r, ok := at.mcpClient.(interface{ LastCallCostUSD() (float64, bool) }); ok {
 			if actual, has := r.LastCallCostUSD(); has {
-				chargeErr = at.store.AICharge().RecordWithCost(at.id, chargeModel, at.config.AIModel, actual)
-			} else {
-				chargeErr = at.store.AICharge().Record(at.id, chargeModel, at.config.AIModel)
+				costUSD = actual
 			}
+		} else if usage != nil && usage.PromptTokens+usage.CompletionTokens > 0 {
+			cacheHit := usage.PromptCacheHitTokens
+			cacheMiss := usage.PromptTokens - cacheHit
+			if actual, ok := store.ComputeUsageCostWithCache(chargeModel, cacheHit, cacheMiss, usage.CompletionTokens); ok {
+				costUSD = actual
+			}
+		}
+
+		var chargeErr error
+		if usage != nil {
+			chargeErr = at.store.AICharge().RecordWithUsage(at.id, chargeModel, at.config.AIModel, costUSD,
+				usage.PromptTokens, usage.CompletionTokens, usage.PromptCacheHitTokens)
 		} else {
-			chargeErr = at.store.AICharge().Record(at.id, chargeModel, at.config.AIModel)
+			chargeErr = at.store.AICharge().RecordWithCost(at.id, chargeModel, at.config.AIModel, costUSD)
 		}
 		if chargeErr != nil {
 			at.logWarnf("⚠️ Failed to record AI charge: %v", chargeErr)
@@ -575,6 +597,14 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 			MarginUsed:       marginUsed,
 			UpdateTime:       updateTime,
 		})
+
+		// Refresh ATR14 (4h) for the 1-minute trailing-stop monitor to reuse
+		// without pulling klines itself - refreshed only once per AI cycle.
+		if atrData, err := market.GetWithExchange(symbol, at.exchange); err == nil && atrData.LongerTermContext != nil && atrData.LongerTermContext.ATR14 > 0 {
+			at.lastATRCacheMutex.Lock()
+			at.lastATRCache[symbol] = atrData.LongerTermContext.ATR14
+			at.lastATRCacheMutex.Unlock()
+		}
 	}
 
 	// Clean up closed position records
@@ -670,14 +700,16 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 				})
 			}
 		}
-		// Get trading statistics for AI context
-		stats, err := at.store.Position().GetFullStats(at.id, at.initialBalance)
+		// Get trading statistics for AI context, windowed to the same recent
+		// trades shown above so the stats and the list agree with each other
+		// instead of blending in stale history from a since-changed strategy.
+		stats, err := at.store.Position().GetRecentStats(at.id, at.initialBalance, 10)
 		if err != nil {
 			at.logWarnf("⚠️ Failed to get trading stats: %v", err)
 		} else if stats == nil {
-			at.logWarnf("⚠️ GetFullStats returned nil")
+			at.logWarnf("⚠️ GetRecentStats returned nil")
 		} else if stats.TotalTrades == 0 {
-			at.logWarnf("⚠️ GetFullStats returned 0 trades")
+			at.logWarnf("⚠️ GetRecentStats returned 0 trades")
 		} else {
 			ctx.TradingStats = &kernel.TradingStats{
 				TotalTrades:    stats.TotalTrades,
