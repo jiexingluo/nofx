@@ -232,6 +232,67 @@ func TestCall_NonZeroExit_ErrorIncludesStderr(t *testing.T) {
 	}
 }
 
+// TestCall_NonZeroExit_ErrorIncludesCodexErrorEvent pins the production
+// failure mode: with --json, codex reports the reason on stdout and exits 1
+// with stderr empty. The event lines below are verbatim from codex-cli
+// 0.147.0 failing to reach its API.
+func TestCall_NonZeroExit_ErrorIncludesCodexErrorEvent(t *testing.T) {
+	const reason = "stream disconnected before completion: error sending request for url (http://127.0.0.1:9/v1/responses)"
+	runner := func(context.Context, string, []string, io.Reader) ([]byte, []byte, error) {
+		stdout := strings.Join([]string{
+			`{"type":"thread.started","thread_id":"01a17dfe-543b-7952-8c39-8ea80ea532e1"}`,
+			`{"type":"turn.started"}`,
+			`{"type":"error","message":"` + reason + `"}`,
+			`{"type":"turn.failed","error":{"message":"` + reason + `"}}`,
+			``,
+		}, "\n")
+		return []byte(stdout), nil, errors.New("exit status 1")
+	}
+	c := newTestCodexClient(t, runner)
+
+	_, err := c.Call("sys", "user")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "codex: "+reason) {
+		t.Fatalf("error should carry the reason from codex's --json events, got: %v", err)
+	}
+	if n := strings.Count(err.Error(), reason); n != 1 {
+		t.Fatalf("reason appears %d times, want 1 (error and turn.failed carry the same message): %v", n, err)
+	}
+}
+
+func TestCodexFailureDetail(t *testing.T) {
+	t.Run("error item", func(t *testing.T) {
+		got := codexFailureDetail([]byte(`{"type":"item.completed","item":{"id":"item_0","type":"error","message":"quota exceeded"}}`))
+		if got != "quota exceeded" {
+			t.Fatalf("got %q", got)
+		}
+	})
+	t.Run("distinct messages are all kept", func(t *testing.T) {
+		got := codexFailureDetail([]byte(`{"type":"error","message":"retrying"}` + "\n" + `{"type":"turn.failed","error":{"message":"usage limit reached"}}`))
+		if got != "retrying | usage limit reached" {
+			t.Fatalf("got %q", got)
+		}
+	})
+	t.Run("no events falls back to stdout", func(t *testing.T) {
+		if got := codexFailureDetail([]byte("  panic: something unexpected\n")); got != "panic: something unexpected" {
+			t.Fatalf("got %q", got)
+		}
+	})
+	t.Run("long stdout keeps only the tail", func(t *testing.T) {
+		got := codexFailureDetail([]byte(strings.Repeat("x", 5000) + "THE END"))
+		if !strings.HasPrefix(got, "...(stdout tail) ") || !strings.HasSuffix(got, "THE END") || len(got) > 1100 {
+			t.Fatalf("got %d bytes: %q...", len(got), got[:40])
+		}
+	})
+	t.Run("empty stdout", func(t *testing.T) {
+		if got := codexFailureDetail(nil); got != "" {
+			t.Fatalf("got %q", got)
+		}
+	})
+}
+
 func TestCall_Timeout_ProducesTimeoutSpecificError(t *testing.T) {
 	runner := func(ctx context.Context, _ string, _ []string, _ io.Reader) ([]byte, []byte, error) {
 		<-ctx.Done() // simulate a hang until the context deadline fires

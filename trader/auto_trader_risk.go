@@ -2,6 +2,8 @@ package trader
 
 import (
 	"fmt"
+	"math"
+
 	"nofx/kernel"
 	"nofx/logger"
 	"nofx/market"
@@ -18,12 +20,48 @@ const (
 	drawdownClosePriceGainPct = 5.0
 	drawdownCloseGivebackPct  = 40.0
 
-	// trailingStopATRMultiplier sets how far behind the peak price the
-	// trailing stop sits, in ATR14 units. 2.5x is the middle of the 2-3x
-	// range commonly used for crypto Chandelier-Exit-style trailing stops —
-	// tight enough to protect gains, wide enough to survive normal
-	// volatility without getting shaken out early.
-	trailingStopATRMultiplier = 2.5
+	// Exit rules, chosen by replaying all 109 live trades (2026-08-09 →
+	// 10-23) bar-by-bar on 1-minute klines (conservative fills: stop checked
+	// against the bar low/high, stop assumed first when stop and target share
+	// a bar, peak taken from closes like the 1-minute monitor, fees deducted).
+	// All ATR figures are the 4h ATR14 cached in lastATRCache.
+	//
+	//   rules                          win rate   net (vs current)
+	//   previous (2.5x trail, gated)    35.8%      -2.32
+	//   these three together            67.9%     +55.57
+	//
+	// Consistent across both halves of the sample (+25.7 / +29.9) and in a
+	// walk-forward test (params picked on the first half only: 9 of the top
+	// 10 beat the baseline on the unseen second half). Neighbouring values
+	// stay positive (trail 1.0-1.5x, take-profit cap 1.5-3x), so this is not
+	// a knife-edge fit.
+	//
+	// The rule that adds the most profit is the tighter stop, not the lock:
+	// the lock on its own raises win rate to ~70% but LOSES money (-11.41),
+	// because it banks tiny wins while losers still run to the full stop. Do
+	// not loosen the trail or drop the take-profit cap while keeping the
+	// lock — that combination games win rate at the expense of returns.
+
+	// trailingStopATRMultiplier: the stop trails the best price since entry
+	// by this many ATRs, starting at entry. In practice this also tightens the
+	// AI's open-time stop (~4x the 1h ATR, ≈2x the 4h ATR) to 1.25x the 4h
+	// ATR. Position size is still computed from the AI's wider stop, so the
+	// real risk per trade ends up below the MaxRiskPerTrade cap, not above it.
+	trailingStopATRMultiplier = 1.25
+
+	// profitLockTriggerATR / profitLockPct: once price has moved this many
+	// ATRs in the position's favor, the stop is raised to entry +0.5% (net of
+	// ~0.1% round-trip fees) so a trade that has clearly worked cannot be
+	// handed back as a loss. Live review: 18 of 35 losers had been ≥3% in
+	// profit before reversing to their stop.
+	profitLockTriggerATR = 0.5
+	profitLockPct        = 0.5
+
+	// takeProfitCapATR: the take-profit placed on the exchange is never
+	// farther than this many ATRs from entry. The AI sets targets at exactly
+	// its minimum reward-to-risk multiple (44 of 56 trades at precisely
+	// 2.5:1), a median 18.9% away — only 4 of 56 were ever reached.
+	takeProfitCapATR = 2.0
 )
 
 // shouldDrawdownClose reports whether the profit-protection close should fire.
@@ -175,6 +213,7 @@ func (at *AutoTrader) updateTrailingStops() {
 		symbol, _ := pos["symbol"].(string)
 		side, _ := pos["side"].(string)
 		markPrice, _ := pos["markPrice"].(float64)
+		entryPrice, _ := pos["entryPrice"].(float64)
 		quantity, _ := pos["positionAmt"].(float64)
 		if quantity < 0 {
 			quantity = -quantity // Short position quantity is negative, convert to positive
@@ -223,8 +262,26 @@ func (at *AutoTrader) updateTrailingStops() {
 			}
 		}
 
-		candidateStop := trailingStopCandidate(side, peakPrice, atr)
+		candidateStop := exitStopCandidate(side, entryPrice, peakPrice, atr)
 		if !isMoreFavorableStop(side, candidateStop, currentStop, hasStop) {
+			continue
+		}
+
+		// The wanted stop is already beyond the current price — price moved
+		// past it between ticks (or after a restart). The exchange rejects a
+		// stop that would trigger immediately, and since the old stop is
+		// cancelled before the new one is placed, trying anyway would leave
+		// the position with no stop at all. Exit at market instead, which is
+		// exactly what that stop exists to do.
+		if stopWouldTriggerNow(side, candidateStop, markPrice) {
+			logger.Infof("🛑 Exit rule hit between ticks: %s %s | wanted stop %.6f is beyond mark %.6f (entry %.6f, peak %.6f) — closing at market",
+				symbol, side, candidateStop, markPrice, entryPrice, peakPrice)
+			if err := at.emergencyClosePosition(symbol, side); err != nil {
+				logger.Infof("❌ Exit rule market close failed for %s %s: %v", symbol, side, err)
+			} else {
+				at.ClearPeakPnLCache(symbol, side)
+				at.ClearTrailingStopCache(symbol, side)
+			}
 			continue
 		}
 
@@ -264,6 +321,80 @@ func nextPeakPrice(side string, peak float64, hasPeak bool, markPrice float64) f
 		return markPrice
 	}
 	return peak
+}
+
+// exitStopCandidate returns the stop the exit rules want right now: the ATR
+// trail behind the best price since entry, raised to the profit-lock level
+// once the favourable move has reached profitLockTriggerATR. Without a usable
+// entry price it falls back to the plain trail.
+func exitStopCandidate(side string, entryPrice, peakPrice, atr float64) float64 {
+	cand := trailingStopCandidate(side, peakPrice, atr)
+	if profitLockArmed(side, entryPrice, peakPrice, atr) {
+		if lock := profitLockPrice(side, entryPrice); isMoreFavorableStop(side, lock, cand, true) {
+			cand = lock
+		}
+	}
+	return cand
+}
+
+// profitLockArmed reports whether the best price since entry is at least
+// profitLockTriggerATR ATRs in the position's favour.
+func profitLockArmed(side string, entryPrice, peakPrice, atr float64) bool {
+	if entryPrice <= 0 || atr <= 0 {
+		return false
+	}
+	if side == "long" {
+		return peakPrice-entryPrice >= profitLockTriggerATR*atr
+	}
+	return entryPrice-peakPrice >= profitLockTriggerATR*atr
+}
+
+// profitLockPrice is entry moved profitLockPct in the position's favour.
+func profitLockPrice(side string, entryPrice float64) float64 {
+	if side == "long" {
+		return entryPrice * (1 + profitLockPct/100)
+	}
+	return entryPrice * (1 - profitLockPct/100)
+}
+
+// stopWouldTriggerNow reports whether a stop at this price is already on the
+// wrong side of the market: at or above the mark for a long, at or below it
+// for a short. The exchange rejects such an order outright.
+func stopWouldTriggerNow(side string, stop, markPrice float64) bool {
+	if stop <= 0 || markPrice <= 0 {
+		return false
+	}
+	if side == "long" {
+		return stop >= markPrice
+	}
+	return stop <= markPrice
+}
+
+// tightenInitialStop returns the stop to place at open: the AI's stop, unless
+// that is farther than trailingStopATRMultiplier ATRs from entry, in which
+// case the trail distance. Matches what the 1-minute trail would set on its
+// first tick anyway, without leaving the wider stop resting until then.
+func tightenInitialStop(side string, entryPrice, aiStop, atr float64) float64 {
+	if entryPrice <= 0 || atr <= 0 {
+		return aiStop
+	}
+	trail := trailingStopCandidate(side, entryPrice, atr)
+	if aiStop <= 0 || isMoreFavorableStop(side, trail, aiStop, true) {
+		return trail
+	}
+	return aiStop
+}
+
+// capTakeProfit returns the take-profit to place at open: the AI's target,
+// pulled in to takeProfitCapATR ATRs from entry when it is farther than that.
+func capTakeProfit(side string, entryPrice, aiTakeProfit, atr float64) float64 {
+	if entryPrice <= 0 || atr <= 0 || aiTakeProfit <= 0 {
+		return aiTakeProfit
+	}
+	if side == "long" {
+		return math.Min(aiTakeProfit, entryPrice+takeProfitCapATR*atr)
+	}
+	return math.Max(aiTakeProfit, entryPrice-takeProfitCapATR*atr)
 }
 
 // trailingStopCandidate computes the ATR-offset stop price behind the peak:
@@ -368,6 +499,22 @@ func (at *AutoTrader) UpdatePeakPnL(symbol, side string, currentPnLPct float64) 
 	} else {
 		// First time recording
 		at.peakPnLCache[posKey] = currentPnLPct
+	}
+}
+
+// prunePeakPnLCache drops peak entries for positions that no longer exist.
+// The cache used to be cleared only by the drawdown-monitor close, so a
+// position closed any other way (stop, take-profit, AI close) left its peak
+// behind, and the next position on that symbol+side inherited it: live
+// prompts showed fresh positions with a "Peak PnL" of 17.63% when the real
+// peak was 0%.
+func (at *AutoTrader) prunePeakPnLCache(openKeys map[string]bool) {
+	at.peakPnLCacheMutex.Lock()
+	defer at.peakPnLCacheMutex.Unlock()
+	for key := range at.peakPnLCache {
+		if !openKeys[key] {
+			delete(at.peakPnLCache, key)
+		}
 	}
 }
 
@@ -527,4 +674,125 @@ func getSideFromAction(action string) string {
 	default:
 		return "BUY"
 	}
+}
+
+// shortEntryBar returns the confidence and risk/reward thresholds a SHORT
+// entry must clear. Shorts are held to a higher bar than longs because every
+// short this account has taken has lost: 9 trades, 0 wins, ~-35 USDT, across
+// two different AI models and two different market regimes. That is a real
+// signal rather than a small-sample artifact, but not grounds for disabling
+// the direction outright — a genuine downtrend is exactly when shorts should
+// be available.
+//
+// Unset config values derive from the base limits (+10 confidence, +1.0 R/R)
+// so the gap is preserved if the base limits are later retuned.
+func (at *AutoTrader) shortEntryBar() (minConfidence int, minRiskReward float64) {
+	var rc store.RiskControlConfig
+	if at.config.StrategyConfig != nil {
+		rc = at.config.StrategyConfig.RiskControl
+	}
+
+	minConfidence = rc.ShortMinConfidence
+	if minConfidence <= 0 {
+		minConfidence = rc.MinConfidence + 10
+	}
+	if minConfidence > store.MaxConfidence {
+		minConfidence = store.MaxConfidence
+	}
+
+	minRiskReward = rc.ShortMinRiskRewardRatio
+	if minRiskReward <= 0 {
+		minRiskReward = rc.MinRiskRewardRatio + 1.0
+	}
+	return minConfidence, minRiskReward
+}
+
+const shortsDisabledReason = "shorts are disabled by this strategy's risk control (disable_shorts)"
+
+// shortsDisabled reports whether the strategy forbids opening new shorts.
+func (at *AutoTrader) shortsDisabled() bool {
+	return at.config.StrategyConfig != nil && at.config.StrategyConfig.RiskControl.DisableShorts
+}
+
+// enforceShortEntryBar rejects a SHORT entry that does not clear the raised
+// bar from shortEntryBar, and every SHORT entry when the strategy sets
+// DisableShorts. Enforced in code rather than left to the prompt
+// because the AI has repeatedly exceeded limits it was merely told about —
+// its own stated risk_usd ran to 11% of equity while the prompt asked for
+// conservative sizing.
+//
+// A decision missing stop_loss or take_profit cannot have its R/R verified,
+// so it is rejected: an unverifiable short is exactly the case this guard
+// exists for.
+func (at *AutoTrader) enforceShortEntryBar(decision *kernel.Decision) error {
+	if decision == nil {
+		return nil
+	}
+	if at.shortsDisabled() {
+		return fmt.Errorf("short entry rejected: %s", shortsDisabledReason)
+	}
+	minConfidence, minRiskReward := at.shortEntryBar()
+
+	if decision.Confidence > 0 && decision.Confidence < minConfidence {
+		return fmt.Errorf("short entry rejected: confidence %d < %d required for shorts", decision.Confidence, minConfidence)
+	}
+
+	entry, stop, target := decision.Price, decision.StopLoss, decision.TakeProfit
+	if entry <= 0 || stop <= 0 || target <= 0 {
+		return fmt.Errorf("short entry rejected: needs entry/stop_loss/take_profit to verify the %.1f:1 reward-to-risk bar (got entry=%.6f stop=%.6f target=%.6f)",
+			minRiskReward, entry, stop, target)
+	}
+	riskDist, rewardDist := math.Abs(stop-entry), math.Abs(entry-target)
+	if riskDist <= 0 {
+		return fmt.Errorf("short entry rejected: stop-loss equals entry, risk undefined")
+	}
+	if rr := rewardDist / riskDist; rr < minRiskReward {
+		return fmt.Errorf("short entry rejected: reward-to-risk %.2f:1 < %.1f:1 required for shorts", rr, minRiskReward)
+	}
+	return nil
+}
+
+// enforceMaxRiskPerTrade caps position size so that hitting the stop-loss
+// costs at most equity × MaxRiskPerTrade (CODE ENFORCED). Returns the
+// adjusted size and whether it was capped.
+//
+// Leverage deliberately plays no part: position_size_usd is already full
+// notional exposure, so the dollar loss for a given price move is the same at
+// 3x or 20x — only the margin and liquidation distance change. This mirrors
+// the formula the system prompt gives the AI for risk_usd.
+//
+// Without a usable stop-loss the loss is unbounded and no cap can be
+// computed; the trade proceeds (the ATR trailing stop is the backstop) but
+// the gap is logged loudly, since this is the one path where the cap silently
+// does not apply.
+func (at *AutoTrader) enforceMaxRiskPerTrade(positionSizeUSD, entryPrice, stopLoss, equity float64, symbol string) (float64, bool) {
+	if at.config.StrategyConfig == nil || positionSizeUSD <= 0 || equity <= 0 {
+		return positionSizeUSD, false
+	}
+	maxRiskFraction := at.config.StrategyConfig.RiskControl.MaxRiskPerTrade
+	if maxRiskFraction <= 0 {
+		maxRiskFraction = store.DefaultRiskPerTrade
+	}
+
+	if entryPrice <= 0 || stopLoss <= 0 {
+		logger.Warnf("  ⚠️ [RISK CONTROL] %s: no usable stop-loss (entry=%.6f stop=%.6f), per-trade risk cap NOT applied",
+			symbol, entryPrice, stopLoss)
+		return positionSizeUSD, false
+	}
+	riskFraction := math.Abs(entryPrice-stopLoss) / entryPrice
+	if riskFraction <= 0 {
+		logger.Warnf("  ⚠️ [RISK CONTROL] %s: stop-loss equals entry, per-trade risk cap NOT applied", symbol)
+		return positionSizeUSD, false
+	}
+
+	maxRiskUSD := equity * maxRiskFraction
+	riskUSD := positionSizeUSD * riskFraction
+	if riskUSD <= maxRiskUSD {
+		return positionSizeUSD, false
+	}
+
+	cappedSize := maxRiskUSD / riskFraction
+	logger.Infof("  ⚠️ [RISK CONTROL] %s: risk %.2f USDT exceeds cap %.2f (equity %.2f × %.1f%%), reducing position %.2f → %.2f USDT",
+		symbol, riskUSD, maxRiskUSD, equity, maxRiskFraction*100, positionSizeUSD, cappedSize)
+	return cappedSize, true
 }

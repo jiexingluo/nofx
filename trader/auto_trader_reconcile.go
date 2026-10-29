@@ -2,11 +2,24 @@ package trader
 
 import (
 	"strings"
+	"time"
 
 	"nofx/logger"
 	"nofx/market"
 	"nofx/store"
 )
+
+// reconcileGracePeriod keeps this reconciler from racing the order-sync
+// goroutine, which runs every 30s per exchange (see StartOrderSync in
+// auto_trader.go) and is the component that attributes realized PnL from
+// fills. A position that closes on the exchange is briefly not-live but also
+// not-yet-closed locally; closing it here in that window would strand its PnL
+// at whatever the row happened to hold — observed in production booking a
+// +34.30 USDT winner as a flat trade, 4 seconds after its closing fills had
+// already landed. 10 minutes gives the 30s sync ~20 attempts before this
+// reconciler will touch anything, while rows genuinely stranded by a past
+// outage are hours-to-months old and unaffected.
+const reconcileGracePeriod = 10 * time.Minute
 
 // buildLiveQtyMap converts a Trader.GetPositions() result into the
 // (symbol, side) → quantity map store.ReconcileOpenPositionsWithLive expects.
@@ -92,7 +105,7 @@ func (at *AutoTrader) reconcileOpenPositions() {
 		return
 	}
 
-	closed, err := at.store.Position().ReconcileOpenPositionsWithLive(at.exchangeID, buildLiveQtyMap(positions))
+	closed, err := at.store.Position().ReconcileOpenPositionsWithLive(at.exchangeID, buildLiveQtyMap(positions), reconcileGracePeriod)
 	if err != nil {
 		logger.Infof("❌ Position reconcile: failed for exchange %s: %v", at.exchangeID, err)
 		return

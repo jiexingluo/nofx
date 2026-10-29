@@ -254,6 +254,11 @@ function defaultRisk(risk?: Partial<RiskControlConfig>): RiskControlConfig {
     min_confidence: risk?.min_confidence || 78,
     drawdown_min_profit: risk?.drawdown_min_profit ?? 8,
     drawdown_max_drawdown: risk?.drawdown_max_drawdown ?? 55,
+    // No editor controls for these; carried through so a save keeps them.
+    max_risk_per_trade: risk?.max_risk_per_trade,
+    short_min_confidence: risk?.short_min_confidence,
+    short_min_risk_reward_ratio: risk?.short_min_risk_reward_ratio,
+    disable_shorts: risk?.disable_shorts,
   }
 }
 

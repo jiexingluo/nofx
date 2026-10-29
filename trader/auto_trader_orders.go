@@ -98,6 +98,14 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 		decision.PositionSizeUSD = adjustedPositionSize
 	}
 
+	// [CODE ENFORCED] Per-trade risk cap: hitting the stop must cost at most
+	// equity × MaxRiskPerTrade. Runs after the notional cap so it sizes off
+	// whatever that already allowed.
+	riskCapped, wasRiskCapped := at.enforceMaxRiskPerTrade(decision.PositionSizeUSD, decision.Price, decision.StopLoss, equity, decision.Symbol)
+	if wasRiskCapped {
+		decision.PositionSizeUSD = riskCapped
+	}
+
 	// ⚠️ Auto-adjust position size if insufficient margin
 	marginFactor := marginOverheadFactor/float64(decision.Leverage) + takerFeeRate
 	maxAffordablePositionSize := availableBalance / marginFactor
@@ -147,19 +155,39 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 	posKey := decision.Symbol + "_long"
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
 
+	// A new position starts with no profit history: clear any peak left by a
+	// previous position on the same symbol+side, which otherwise leaks into
+	// the drawdown monitor and the "Peak PnL" the AI is shown.
+	at.ClearPeakPnLCache(decision.Symbol, "long")
+
+	// Place the exit-rule versions of the AI's levels (see the constants in
+	// auto_trader_risk.go): stop no wider than the ATR trail, take-profit no
+	// farther than takeProfitCapATR. Sizing above already used the AI's own
+	// stop, so the real risk taken is at or below the per-trade cap.
+	var atr4 float64
+	if marketData.LongerTermContext != nil {
+		atr4 = marketData.LongerTermContext.ATR14
+	}
+	placedStop := tightenInitialStop("long", marketData.CurrentPrice, decision.StopLoss, atr4)
+	placedTP := capTakeProfit("long", marketData.CurrentPrice, decision.TakeProfit, atr4)
+	if placedStop != decision.StopLoss || placedTP != decision.TakeProfit {
+		logger.Infof("  🎯 Exit rules applied to %s long: stop %.6f → %.6f, take-profit %.6f → %.6f (entry %.6f, atr4h %.6f)",
+			decision.Symbol, decision.StopLoss, placedStop, decision.TakeProfit, placedTP, marketData.CurrentPrice, atr4)
+	}
+
 	// Set stop loss and take profit
-	if err := at.trader.SetStopLoss(decision.Symbol, "LONG", quantity, decision.StopLoss); err != nil {
+	if err := at.trader.SetStopLoss(decision.Symbol, "LONG", quantity, placedStop); err != nil {
 		logger.Infof("  ⚠ Failed to set stop loss: %v", err)
 	} else {
-		// Seed the ATR trailing-stop cache from this AI-decided stop so the
+		// Seed the trailing-stop cache with the stop actually placed so the
 		// 1-minute monitor only ever tightens it from here, never treats a
 		// freshly-opened position as having no stop at all.
 		at.trailingStopCacheMutex.Lock()
 		at.peakPriceCache[posKey] = marketData.CurrentPrice
-		at.currentStopCache[posKey] = decision.StopLoss
+		at.currentStopCache[posKey] = placedStop
 		at.trailingStopCacheMutex.Unlock()
 	}
-	if err := at.trader.SetTakeProfit(decision.Symbol, "LONG", quantity, decision.TakeProfit); err != nil {
+	if err := at.trader.SetTakeProfit(decision.Symbol, "LONG", quantity, placedTP); err != nil {
 		logger.Infof("  ⚠ Failed to set take profit: %v", err)
 	}
 	if marketData.LongerTermContext != nil && marketData.LongerTermContext.ATR14 > 0 {
@@ -174,6 +202,13 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 // executeOpenShortWithRecord executes open short position and records detailed information
 func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, actionRecord *store.DecisionAction) error {
 	logger.Infof("  📉 Open short: %s", decision.Symbol)
+
+	// [CODE ENFORCED] Raised bar for shorts — checked before anything is
+	// placed, since every short this account has taken has lost.
+	if err := at.enforceShortEntryBar(decision); err != nil {
+		logger.Infof("  ⛔ [RISK CONTROL] %s: %v", decision.Symbol, err)
+		return err
+	}
 
 	// ⚠️ Get current positions for multiple checks
 	positions, err := at.trader.GetPositions()
@@ -227,6 +262,14 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 		decision.PositionSizeUSD = adjustedPositionSize
 	}
 
+	// [CODE ENFORCED] Per-trade risk cap: hitting the stop must cost at most
+	// equity × MaxRiskPerTrade. Runs after the notional cap so it sizes off
+	// whatever that already allowed.
+	riskCapped, wasRiskCapped := at.enforceMaxRiskPerTrade(decision.PositionSizeUSD, decision.Price, decision.StopLoss, equity, decision.Symbol)
+	if wasRiskCapped {
+		decision.PositionSizeUSD = riskCapped
+	}
+
 	// ⚠️ Auto-adjust position size if insufficient margin
 	marginFactor := marginOverheadFactor/float64(decision.Leverage) + takerFeeRate
 	maxAffordablePositionSize := availableBalance / marginFactor
@@ -276,19 +319,39 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 	posKey := decision.Symbol + "_short"
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
 
+	// A new position starts with no profit history: clear any peak left by a
+	// previous position on the same symbol+side, which otherwise leaks into
+	// the drawdown monitor and the "Peak PnL" the AI is shown.
+	at.ClearPeakPnLCache(decision.Symbol, "short")
+
+	// Place the exit-rule versions of the AI's levels (see the constants in
+	// auto_trader_risk.go): stop no wider than the ATR trail, take-profit no
+	// farther than takeProfitCapATR. Sizing above already used the AI's own
+	// stop, so the real risk taken is at or below the per-trade cap.
+	var atr4 float64
+	if marketData.LongerTermContext != nil {
+		atr4 = marketData.LongerTermContext.ATR14
+	}
+	placedStop := tightenInitialStop("short", marketData.CurrentPrice, decision.StopLoss, atr4)
+	placedTP := capTakeProfit("short", marketData.CurrentPrice, decision.TakeProfit, atr4)
+	if placedStop != decision.StopLoss || placedTP != decision.TakeProfit {
+		logger.Infof("  🎯 Exit rules applied to %s short: stop %.6f → %.6f, take-profit %.6f → %.6f (entry %.6f, atr4h %.6f)",
+			decision.Symbol, decision.StopLoss, placedStop, decision.TakeProfit, placedTP, marketData.CurrentPrice, atr4)
+	}
+
 	// Set stop loss and take profit
-	if err := at.trader.SetStopLoss(decision.Symbol, "SHORT", quantity, decision.StopLoss); err != nil {
+	if err := at.trader.SetStopLoss(decision.Symbol, "SHORT", quantity, placedStop); err != nil {
 		logger.Infof("  ⚠ Failed to set stop loss: %v", err)
 	} else {
-		// Seed the ATR trailing-stop cache from this AI-decided stop so the
+		// Seed the trailing-stop cache with the stop actually placed so the
 		// 1-minute monitor only ever tightens it from here, never treats a
 		// freshly-opened position as having no stop at all.
 		at.trailingStopCacheMutex.Lock()
 		at.peakPriceCache[posKey] = marketData.CurrentPrice
-		at.currentStopCache[posKey] = decision.StopLoss
+		at.currentStopCache[posKey] = placedStop
 		at.trailingStopCacheMutex.Unlock()
 	}
-	if err := at.trader.SetTakeProfit(decision.Symbol, "SHORT", quantity, decision.TakeProfit); err != nil {
+	if err := at.trader.SetTakeProfit(decision.Symbol, "SHORT", quantity, placedTP); err != nil {
 		logger.Infof("  ⚠ Failed to set take profit: %v", err)
 	}
 	if marketData.LongerTermContext != nil && marketData.LongerTermContext.ATR14 > 0 {

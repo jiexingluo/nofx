@@ -15,6 +15,39 @@ import (
 // ============================================================================
 
 // BuildSystemPrompt builds System Prompt according to strategy configuration
+// noApproximationSymbolsRule is emitted in every prompt variant's output-format
+// section. The decision parser rejects the whole response if "~" appears
+// anywhere in the JSON — that check exists to block range values like
+// 100~200, which would leave an order price ambiguous, but it also catches the
+// character inside free-text fields. gpt-5.6-luna habitually writes
+// approximations such as "(~315.62)" in `reasoning`, which discarded
+// otherwise-valid, executable decisions in production. Stated explicitly so
+// the model avoids the character rather than losing the cycle.
+const noApproximationSymbolsRule = "**Numbers must be precise single values. Never use `~`, `\u2248`, or any approximation/range symbol ANYWHERE in the JSON — including inside the `reasoning` text field.** Write `315.62`, not `~315.62`; write `around 315.62` if you need to express uncertainty. The parser rejects the entire response on seeing `~`.\n\n"
+
+// shortsDisabledRule replaces every short-entry instruction when the strategy
+// sets RiskControl.DisableShorts. The trader rejects open_short in code either
+// way; telling the model up front keeps it from spending its analysis — and
+// the cycle — on a trade that can never be placed.
+const shortsDisabledRule = "- **SHORT entries are DISABLED for this strategy.** Never output `open_short` — it is rejected in code. Use `open_long`, `wait` or `hold`; `close_short` still works for a short you already hold.\n"
+
+// decisionActions lists the actions the model may output.
+func decisionActions(riskControl store.RiskControlConfig) string {
+	if riskControl.DisableShorts {
+		return "open_long | close_long | close_short | hold | wait"
+	}
+	return "open_long | open_short | close_long | close_short | hold | wait"
+}
+
+// exampleOpenAction is the action shown in example decisions that would
+// otherwise demonstrate a short.
+func exampleOpenAction(riskControl store.RiskControlConfig) string {
+	if riskControl.DisableShorts {
+		return "open_long"
+	}
+	return "open_short"
+}
+
 func (e *StrategyEngine) BuildSystemPrompt(accountEquity float64, variant string) string {
 	var sb strings.Builder
 	riskControl := e.config.RiskControl
@@ -121,6 +154,20 @@ func (e *StrategyEngine) BuildSystemPrompt(accountEquity float64, variant string
 		sb.WriteString("Only open positions when multiple signals resonate. You have:\n")
 		e.writeAvailableIndicators(&sb, zh)
 		sb.WriteString(fmt.Sprintf("\nFeel free to use any effective analysis method, but **confidence ≥ %d** is required to open positions; avoid low-quality behaviors such as single-indicator entries, contradictory signals, sideways chop, or re-entering immediately after a close.\n\n", riskControl.MinConfidence))
+	}
+
+	// Momentum floor (data-backed, AI guided): entries with weak RSI7
+	// momentum lose far more than they win in live records (26% win rate
+	// for RSI7 < 60 longs vs 45% for 60-70). The stored EntryStandards only
+	// cap the overbought side (RSI < 75 for long / > 25 for short); this
+	// adds the floor the data says is missing.
+	sb.WriteString("\n**RSI7 momentum floor (data-backed):**\n")
+	sb.WriteString("- Long entries require 1h RSI7 **≥ 60** (still < 75 as above).\n")
+	if riskControl.DisableShorts {
+		sb.WriteString("Do not open a trade with weak momentum (RSI7 < 60): live records show those entries win only ~26% of the time and were the only losing group, while RSI7 60-70 longs won ~45%.\n")
+	} else {
+		sb.WriteString("- Short entries require 1h RSI7 **≤ 40** (still > 25 as above).\n")
+		sb.WriteString("Do not open a trade with weak momentum (long RSI7 < 60, short RSI7 > 40): live records show those entries win only ~26% of the time and were the only losing group, while RSI7 60-70 longs won ~45%.\n")
 	}
 
 	// 6. Decision process (editable)
@@ -359,6 +406,10 @@ func writeVergexHardConstraints(sb *strings.Builder, accountEquity float64, risk
 		sb.WriteString("- If the setup is not strong enough for full size, output `wait`.\n")
 		sb.WriteString("- Do not use available_balance directly as position_size_usd.\n\n")
 	}
+	if riskControl.DisableShorts {
+		sb.WriteString(shortsDisabledRule)
+		sb.WriteString("\n")
+	}
 }
 
 func writeVergexOutputFormat(sb *strings.Builder, accountEquity float64, riskControl store.RiskControlConfig, tradeFiPositionValueRatio float64, singleSymbol bool, primarySymbol string, zh bool) {
@@ -377,16 +428,26 @@ func writeVergexOutputFormat(sb *strings.Builder, accountEquity float64, riskCon
 	sb.WriteString("# Output Format (Strictly Follow)\n\n")
 	if zh {
 		sb.WriteString("Use XML tags <reasoning> and <decision> to separate concise analysis from the decision JSON.\n\n")
-		sb.WriteString("Direction must be data-driven: use `open_long` for confirmed upside structures and `open_short` for confirmed downside structures; never default to long-only or short-only behavior.\n\n")
-		if !singleSymbol {
+		if riskControl.DisableShorts {
+			sb.WriteString("Shorts are disabled for this strategy: use `open_long` only for confirmed upside structures and `wait` otherwise; never output `open_short`.\n\n")
+		} else {
+			sb.WriteString("Direction must be data-driven: use `open_long` for confirmed upside structures and `open_short` for confirmed downside structures; never default to long-only or short-only behavior.\n\n")
+		}
+		if !singleSymbol && !riskControl.DisableShorts {
 			sb.WriteString("Evaluate both directions every cycle, but enter a side only when its own signals independently justify it. Never open a position just to balance the book — an unbalanced book beats a forced trade.\n\n")
 		}
+		sb.WriteString(noApproximationSymbolsRule)
 	} else {
 		sb.WriteString("Use XML tags <reasoning> and <decision> to separate concise analysis from the decision JSON.\n\n")
-		sb.WriteString("Direction must be data-driven: use `open_long` for confirmed upside structures and `open_short` for confirmed downside structures; never default to long-only or short-only behavior.\n\n")
-		if !singleSymbol {
+		if riskControl.DisableShorts {
+			sb.WriteString("Shorts are disabled for this strategy: use `open_long` only for confirmed upside structures and `wait` otherwise; never output `open_short`.\n\n")
+		} else {
+			sb.WriteString("Direction must be data-driven: use `open_long` for confirmed upside structures and `open_short` for confirmed downside structures; never default to long-only or short-only behavior.\n\n")
+		}
+		if !singleSymbol && !riskControl.DisableShorts {
 			sb.WriteString("Evaluate both directions every cycle, but enter a side only when its own signals independently justify it. Never open a position just to balance the book — an unbalanced book beats a forced trade.\n\n")
 		}
+		sb.WriteString(noApproximationSymbolsRule)
 	}
 	sb.WriteString("<reasoning>\n")
 	if zh {
@@ -398,17 +459,17 @@ func writeVergexOutputFormat(sb *strings.Builder, accountEquity float64, riskCon
 	sb.WriteString("<decision>\n")
 	sb.WriteString("```json\n[\n")
 	if singleSymbol {
-		sb.WriteString(fmt.Sprintf("  {\"symbol\": \"%s\", \"action\": \"open_short\", \"leverage\": %d, \"position_size_usd\": %.0f, \"stop_loss\": 0, \"take_profit\": 0, \"confidence\": 85, \"risk_usd\": 0}\n", exampleSymbol, leverage, positionSize))
+		sb.WriteString(fmt.Sprintf("  {\"symbol\": \"%s\", \"action\": \"%s\", \"leverage\": %d, \"position_size_usd\": %.0f, \"stop_loss\": 0, \"take_profit\": 0, \"confidence\": 85, \"risk_usd\": 0}\n", exampleSymbol, exampleOpenAction(riskControl), leverage, positionSize))
 	} else {
 		sb.WriteString(fmt.Sprintf("  {\"symbol\": \"%s\", \"action\": \"open_long\", \"leverage\": %d, \"position_size_usd\": %.0f, \"stop_loss\": 0, \"take_profit\": 0, \"confidence\": 85, \"risk_usd\": 0},\n", exampleSymbol, leverage, positionSize))
-		sb.WriteString(fmt.Sprintf("  {\"symbol\": \"%s\", \"action\": \"open_short\", \"leverage\": %d, \"position_size_usd\": %.0f, \"stop_loss\": 0, \"take_profit\": 0, \"confidence\": 85, \"risk_usd\": 0}\n", secondSymbol, leverage, positionSize))
+		sb.WriteString(fmt.Sprintf("  {\"symbol\": \"%s\", \"action\": \"%s\", \"leverage\": %d, \"position_size_usd\": %.0f, \"stop_loss\": 0, \"take_profit\": 0, \"confidence\": 85, \"risk_usd\": 0}\n", secondSymbol, exampleOpenAction(riskControl), leverage, positionSize))
 	}
 	sb.WriteString("]\n```\n")
 	sb.WriteString("</decision>\n\n")
 
 	if zh {
 		sb.WriteString("## Field Requirements\n\n")
-		sb.WriteString("- `action`: open_long | open_short | close_long | close_short | hold | wait\n")
+		sb.WriteString("- `action`: " + decisionActions(riskControl) + "\n")
 		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100; recommended ≥ %d to open\n", riskControl.MinConfidence))
 		sb.WriteString("- Required when opening: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd\n")
 		sb.WriteString("- All numeric values must be calculated numbers, not formulas.\n")
@@ -420,7 +481,7 @@ func writeVergexOutputFormat(sb *strings.Builder, accountEquity float64, riskCon
 		sb.WriteString("\n")
 	} else {
 		sb.WriteString("## Field Requirements\n\n")
-		sb.WriteString("- `action`: open_long | open_short | close_long | close_short | hold | wait\n")
+		sb.WriteString("- `action`: " + decisionActions(riskControl) + "\n")
 		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100; recommended ≥ %d to open\n", riskControl.MinConfidence))
 		sb.WriteString("- Required when opening: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd\n")
 		sb.WriteString("- All numeric values must be calculated numbers, not formulas.\n")
@@ -550,15 +611,43 @@ func writeHardConstraints(sb *strings.Builder, accountEquity float64, riskContro
 		}
 	}
 
-	if zh {
-		sb.WriteString(fmt.Sprintf("- Max Margin Usage: ≤%.0f%%\n", riskControl.MaxMarginUsage*100))
-		sb.WriteString(fmt.Sprintf("- Min Position Size: ≥%.0f USDT\n\n", riskControl.MinPositionSize))
-		sb.WriteString("## AI GUIDED (recommended):\n")
-	} else {
-		sb.WriteString(fmt.Sprintf("- Max Margin Usage: ≤%.0f%%\n", riskControl.MaxMarginUsage*100))
-		sb.WriteString(fmt.Sprintf("- Min Position Size: ≥%.0f USDT\n\n", riskControl.MinPositionSize))
-		sb.WriteString("## AI GUIDED (recommended):\n")
+	sb.WriteString(fmt.Sprintf("- Max Margin Usage: ≤%.0f%%\n", riskControl.MaxMarginUsage*100))
+	sb.WriteString(fmt.Sprintf("- Min Position Size: ≥%.0f USDT\n", riskControl.MinPositionSize))
+
+	// Per-trade risk cap and the raised short bar are both enforced in code
+	// (trader/auto_trader_risk.go). They are stated here so the AI sizes
+	// correctly up front instead of having its position silently shrunk, or
+	// proposing a short that is then rejected outright.
+	maxRiskFraction := riskControl.MaxRiskPerTrade
+	if maxRiskFraction <= 0 {
+		maxRiskFraction = 0.03
 	}
+	sb.WriteString(fmt.Sprintf("- **Max Risk Per Trade: ≤%.1f%% of equity", maxRiskFraction*100))
+	if accountEquity > 0 {
+		sb.WriteString(fmt.Sprintf(" (= %.2f USDT at current equity %.0f)", accountEquity*maxRiskFraction, accountEquity))
+	}
+	sb.WriteString("**\n")
+	sb.WriteString("  `risk_usd` = position_size_usd × |entry − stop_loss| ÷ entry MUST NOT exceed this.\n")
+	sb.WriteString("  If a setup needs a wider stop, SHRINK position_size_usd to fit — do not widen the risk.\n")
+	sb.WriteString("  Positions exceeding this are automatically reduced before the order is placed.\n")
+
+	if riskControl.DisableShorts {
+		sb.WriteString(shortsDisabledRule)
+		sb.WriteString("\n")
+	} else {
+		shortConf := riskControl.ShortMinConfidence
+		if shortConf <= 0 {
+			shortConf = riskControl.MinConfidence + 10
+		}
+		shortRR := riskControl.ShortMinRiskRewardRatio
+		if shortRR <= 0 {
+			shortRR = riskControl.MinRiskRewardRatio + 1.0
+		}
+		sb.WriteString(fmt.Sprintf("- **SHORT entries require confidence ≥%d AND reward-to-risk ≥%.1f:1** (higher than longs).\n", shortConf, shortRR))
+		sb.WriteString("  Shorts below this bar are rejected in code and the cycle is wasted, so only propose a short that clearly clears it.\n\n")
+	}
+
+	sb.WriteString("## AI GUIDED (recommended):\n")
 
 	if singleSymbol {
 		lev := riskControl.AltcoinMaxLeverage
@@ -629,6 +718,7 @@ func writeOutputFormat(sb *strings.Builder, accountEquity, btcEthPosValueRatio f
 		sb.WriteString("**Must use XML tags <reasoning> and <decision> to separate chain of thought and decision JSON, avoiding parsing errors**\n\n")
 	}
 	sb.WriteString("## Format Requirements\n\n")
+	sb.WriteString(noApproximationSymbolsRule)
 	sb.WriteString("<reasoning>\n")
 	if zh {
 		sb.WriteString("Your chain of thought analysis...\n- Briefly analyze your thinking process\n")
@@ -658,8 +748,13 @@ func writeOutputFormat(sb *strings.Builder, accountEquity, btcEthPosValueRatio f
 		sb.WriteString(fmt.Sprintf("  {\"symbol\": \"%s\", \"action\": \"wait\"}\n", primarySymbol))
 	} else {
 		examplePositionSize := accountEquity * btcEthPosValueRatio
-		sb.WriteString(fmt.Sprintf("  {\"symbol\": \"BTCUSDT\", \"action\": \"open_short\", \"leverage\": %d, \"position_size_usd\": %.0f, \"stop_loss\": 97000, \"take_profit\": 91000, \"confidence\": 85, \"risk_usd\": 300},\n",
-			riskControl.BTCETHMaxLeverage, examplePositionSize))
+		if riskControl.DisableShorts {
+			sb.WriteString(fmt.Sprintf("  {\"symbol\": \"BTCUSDT\", \"action\": \"open_long\", \"leverage\": %d, \"position_size_usd\": %.0f, \"stop_loss\": 91000, \"take_profit\": 97000, \"confidence\": 85, \"risk_usd\": 300},\n",
+				riskControl.BTCETHMaxLeverage, examplePositionSize))
+		} else {
+			sb.WriteString(fmt.Sprintf("  {\"symbol\": \"BTCUSDT\", \"action\": \"open_short\", \"leverage\": %d, \"position_size_usd\": %.0f, \"stop_loss\": 97000, \"take_profit\": 91000, \"confidence\": 85, \"risk_usd\": 300},\n",
+				riskControl.BTCETHMaxLeverage, examplePositionSize))
+		}
 		sb.WriteString("  {\"symbol\": \"ETHUSDT\", \"action\": \"close_long\"}\n")
 	}
 	sb.WriteString("]\n```\n")
@@ -667,7 +762,7 @@ func writeOutputFormat(sb *strings.Builder, accountEquity, btcEthPosValueRatio f
 
 	if zh {
 		sb.WriteString("## Field Description\n\n")
-		sb.WriteString("- `action`: open_long | open_short | close_long | close_short | hold | wait\n")
+		sb.WriteString("- `action`: " + decisionActions(riskControl) + "\n")
 		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100 (opening recommended ≥ %d)\n", riskControl.MinConfidence))
 		sb.WriteString("- Required when opening: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd\n")
 		sb.WriteString("- **IMPORTANT**: all numeric values must be calculated numbers, NOT formulas/expressions (e.g. use `27.76`, not `3000 * 0.01`)\n")
@@ -677,7 +772,7 @@ func writeOutputFormat(sb *strings.Builder, accountEquity, btcEthPosValueRatio f
 		sb.WriteString("\n")
 	} else {
 		sb.WriteString("## Field Description\n\n")
-		sb.WriteString("- `action`: open_long | open_short | close_long | close_short | hold | wait\n")
+		sb.WriteString("- `action`: " + decisionActions(riskControl) + "\n")
 		sb.WriteString(fmt.Sprintf("- `confidence`: 0-100 (opening recommended ≥ %d)\n", riskControl.MinConfidence))
 		sb.WriteString("- Required when opening: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd\n")
 		sb.WriteString("- **IMPORTANT**: all numeric values must be calculated numbers, NOT formulas/expressions (e.g. use `27.76`, not `3000 * 0.01`)\n")

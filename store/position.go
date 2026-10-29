@@ -5,6 +5,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -128,11 +129,30 @@ func (TraderPosition) TableName() string {
 // PositionStore position storage
 type PositionStore struct {
 	db *gorm.DB
+
+	// zombieSeen counts consecutive reconcile passes in which a row looked
+	// like a zombie while no closing fill was available yet. Reconcile runs on
+	// its own timer and can fire in the same second a position closes, before
+	// the fill-sync has recorded the closing fill — closing the row then books
+	// a real trade as 0.00 (observed six times in production). Requiring a few
+	// passes gives the 30s fill-sync time to land the fill, while a genuine
+	// phantom row still closes after the streak threshold.
+	//
+	// In-memory and keyed by row id: losing it on restart only means a
+	// genuinely dead row waits a few extra passes, which is harmless.
+	zombieMu   sync.Mutex
+	zombieSeen map[int64]int
 }
+
+// zombiePassesBeforeClosing is how many consecutive reconcile passes a row
+// may look like a zombie with no closing fill before it is closed at whatever
+// PnL it carries. Three passes at the reconciler's 60s cadence is ~3 minutes,
+// roughly six fill-sync cycles - ample for a real closing fill to arrive.
+const zombiePassesBeforeClosing = 3
 
 // NewPositionStore creates position storage instance
 func NewPositionStore(db *gorm.DB) *PositionStore {
-	return &PositionStore{db: db}
+	return &PositionStore{db: db, zombieSeen: make(map[int64]int)}
 }
 
 // isPostgres checks if the database is PostgreSQL

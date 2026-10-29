@@ -179,7 +179,7 @@ export const AI_PROVIDER_CONFIG: Record<string, AIProviderConfig> = {
     apiName: 'MiniMax',
   },
   codex_cli: {
-    defaultModel: 'gpt-5.6-sol',
+    defaultModel: 'gpt-5.6-luna',
     apiUrl: 'https://developers.openai.com/codex/cli',
     apiName: 'Codex CLI (local subscription login — no key needed here)',
     noApiKeyRequired: true,

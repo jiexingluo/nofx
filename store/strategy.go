@@ -30,6 +30,11 @@ const (
 	MaxPositionSize   = 1000.0
 	MinConfidence     = 50
 	MaxConfidence     = 100
+
+	// Bounds for RiskControlConfig.MaxRiskPerTrade (fraction of equity).
+	MinRiskPerTrade     = 0.005
+	MaxRiskPerTradeCap  = 0.20
+	DefaultRiskPerTrade = 0.03
 )
 
 // ClampLimits enforces product-level limits on strategy config to prevent token overflow.
@@ -131,6 +136,19 @@ func (c *StrategyConfig) ClampLimits() {
 	}
 	if c.RiskControl.MinConfidence > MaxConfidence {
 		c.RiskControl.MinConfidence = MaxConfidence
+	}
+
+	// Unset (zero) means "not configured" and takes the default rather than
+	// being clamped up to the floor, so an older strategy row that predates
+	// this field still gets real protection instead of 0.5%.
+	if c.RiskControl.MaxRiskPerTrade <= 0 {
+		c.RiskControl.MaxRiskPerTrade = DefaultRiskPerTrade
+	}
+	if c.RiskControl.MaxRiskPerTrade < MinRiskPerTrade {
+		c.RiskControl.MaxRiskPerTrade = MinRiskPerTrade
+	}
+	if c.RiskControl.MaxRiskPerTrade > MaxRiskPerTradeCap {
+		c.RiskControl.MaxRiskPerTrade = MaxRiskPerTradeCap
 	}
 }
 
@@ -961,9 +979,32 @@ type RiskControlConfig struct {
 	// Min take_profit / stop_loss ratio (AI guided)
 	MinRiskRewardRatio float64 `json:"min_risk_reward_ratio"`
 	// Min AI confidence to open position (AI guided)
-	MinConfidence       int     `json:"min_confidence"`
-	DrawdownMinProfit   float64 `json:"drawdown_min_profit,omitempty"`
-	DrawdownMaxDrawdown float64 `json:"drawdown_max_drawdown,omitempty"`
+	MinConfidence int `json:"min_confidence"`
+
+	// Max fraction of equity a single trade may lose if its stop-loss is hit,
+	// e.g. 0.03 = 3% (CODE ENFORCED). The position is sized down until
+	// position_value × |entry-stop|/entry fits under equity × this.
+	// Added after a 13-trade losing streak cost 41% of the account, with
+	// individual losses reaching ~7% of equity each — the other limits here
+	// cap notional and margin, none of them capped loss per trade.
+	MaxRiskPerTrade float64 `json:"max_risk_per_trade"`
+
+	// Entry bar applied to SHORT entries only (CODE ENFORCED). Shorts have
+	// lost on every attempt this account has made (9 trades, 0 wins across
+	// two different AI models), so they must clear a higher bar than longs
+	// rather than being disabled outright. Zero means "derive from the base
+	// limits" — see shortEntryBar() in trader/auto_trader_risk.go.
+	ShortMinConfidence      int     `json:"short_min_confidence,omitempty"`
+	ShortMinRiskRewardRatio float64 `json:"short_min_risk_reward_ratio,omitempty"`
+	DrawdownMinProfit       float64 `json:"drawdown_min_profit,omitempty"`
+	DrawdownMaxDrawdown     float64 `json:"drawdown_max_drawdown,omitempty"`
+
+	// Rejects every new SHORT entry (CODE ENFORCED) and switches the prompt to
+	// long-only; closing a short already held is unaffected. Turned on for the
+	// live strategy on 2026-10-29 after shorts went 1/6 under the 2026-10-24
+	// exit rules (−14.6 USDT after fees) while longs went 10/11 (+1.7) — even
+	// the raised short bar above had not made shorts pay.
+	DisableShorts bool `json:"disable_shorts,omitempty"`
 }
 
 // NewStrategyStore creates a new StrategyStore
@@ -1046,15 +1087,16 @@ func GetDefaultStrategyConfig(lang string) StrategyConfig {
 			PriceRankingLimit:      10,
 		},
 		RiskControl: RiskControlConfig{
-			MaxPositions:                 2,   // Few, concentrated positions held for big moves (CODE ENFORCED)
-			BTCETHMaxLeverage:            10,  // Moderate leverage: a wide (-5%) stop is ~-50% margin, survivable, not an instant liquidation
-			AltcoinMaxLeverage:           10,  // Moderate leverage: a wide (-5%) stop is ~-50% margin, survivable, not an instant liquidation
-			BTCETHMaxPositionValueRatio:  5.0, // Per-position notional = equity × 5; 2 positions = 10x total (full margin at 10x, ~10% liquidation cushion)
-			AltcoinMaxPositionValueRatio: 5.0, // Per-position notional = equity × 5; 2 positions = 10x total (full margin at 10x, ~10% liquidation cushion)
-			MaxMarginUsage:               1.0, // Claw402 Autopilot intentionally uses full margin when opening
-			MinPositionSize:              12,  // Min 12 USDT per position (CODE ENFORCED)
-			MinRiskRewardRatio:           3.0, // Min 3:1 profit/loss ratio (AI guided)
-			MinConfidence:                78,  // Min 78% confidence (AI guided)
+			MaxPositions:                 2,                   // Few, concentrated positions held for big moves (CODE ENFORCED)
+			BTCETHMaxLeverage:            10,                  // Moderate leverage: a wide (-5%) stop is ~-50% margin, survivable, not an instant liquidation
+			AltcoinMaxLeverage:           10,                  // Moderate leverage: a wide (-5%) stop is ~-50% margin, survivable, not an instant liquidation
+			BTCETHMaxPositionValueRatio:  5.0,                 // Per-position notional = equity × 5; 2 positions = 10x total (full margin at 10x, ~10% liquidation cushion)
+			AltcoinMaxPositionValueRatio: 5.0,                 // Per-position notional = equity × 5; 2 positions = 10x total (full margin at 10x, ~10% liquidation cushion)
+			MaxMarginUsage:               1.0,                 // Claw402 Autopilot intentionally uses full margin when opening
+			MinPositionSize:              12,                  // Min 12 USDT per position (CODE ENFORCED)
+			MinRiskRewardRatio:           3.0,                 // Min 3:1 profit/loss ratio (AI guided)
+			MinConfidence:                78,                  // Min 78% confidence (AI guided)
+			MaxRiskPerTrade:              DefaultRiskPerTrade, // Max 3% of equity lost per trade (CODE ENFORCED)
 			DrawdownMinProfit:            8.0,
 			DrawdownMaxDrawdown:          55.0,
 		},

@@ -263,7 +263,7 @@ func (s *Server) handleGetSupportedModels(c *gin.Context) {
 		// Local subprocess provider — shells out to a `codex` CLI binary
 		// authenticated via a ChatGPT/Codex subscription login, not an API
 		// key. Registered in mcp/provider/codex_cli.go's init().
-		{"id": "codex_cli", "name": "Codex CLI (GPT-5.6)", "provider": "codex_cli", "defaultModel": "gpt-5.6-sol"},
+		{"id": "codex_cli", "name": "Codex CLI (GPT-5.6)", "provider": "codex_cli", "defaultModel": "gpt-5.6-luna"},
 	}
 
 	c.JSON(http.StatusOK, supportedModels)

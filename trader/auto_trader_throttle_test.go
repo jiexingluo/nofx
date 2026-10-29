@@ -2,6 +2,7 @@ package trader
 
 import (
 	"nofx/kernel"
+	"nofx/store"
 	"strings"
 	"testing"
 	"time"
@@ -121,6 +122,32 @@ func TestTradeThrottleAllowsLongShortPairInCycle(t *testing.T) {
 	reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "open_short"}, ctx, 1)
 	if reason != "" {
 		t.Fatalf("expected the second (short) open in cycle to be allowed, got %q", reason)
+	}
+}
+
+// A short the strategy forbids must be refused by the throttle itself: the
+// loop only counts an open against the per-cycle cap after the throttle
+// passes it, so refusing it here keeps it from crowding out a long.
+func TestTradeThrottleRefusesDisabledShortBeforeCycleCap(t *testing.T) {
+	cfg := store.GetDefaultStrategyConfig("en")
+	cfg.RiskControl.DisableShorts = true
+	at := &AutoTrader{config: AutoTraderConfig{StrategyConfig: &cfg}}
+	ctx := &kernel.Context{}
+
+	for _, queued := range []int{0, 2} {
+		reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "open_short"}, ctx, queued)
+		if !strings.Contains(reason, "disable_shorts") {
+			t.Fatalf("queued=%d: expected the short to be refused as disabled, got %q", queued, reason)
+		}
+	}
+	if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "open_long"}, ctx, 0); reason != "" {
+		t.Fatalf("longs must be unaffected, got %q", reason)
+	}
+
+	// Closing a short already held must still work.
+	held := throttleContext("xyz:INTC", "short", 2*time.Hour, -2.5)
+	if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_short"}, held, 0); reason != "" {
+		t.Fatalf("closing an existing short must be unaffected, got %q", reason)
 	}
 }
 

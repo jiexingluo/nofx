@@ -242,4 +242,11 @@ export interface RiskControlConfig {
   min_confidence: number // Min AI confidence to open position (AI guided)
   drawdown_min_profit?: number
   drawdown_max_drawdown?: number
+
+  // Backend limits the editor has no controls for. Listed so that saving a
+  // strategy round-trips them instead of silently dropping them.
+  max_risk_per_trade?: number // max equity fraction lost if the stop is hit (CODE ENFORCED)
+  short_min_confidence?: number // raised confidence bar for shorts (CODE ENFORCED)
+  short_min_risk_reward_ratio?: number // raised R/R bar for shorts (CODE ENFORCED)
+  disable_shorts?: boolean // reject every new short (CODE ENFORCED)
 }

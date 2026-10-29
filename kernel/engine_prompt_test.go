@@ -225,3 +225,94 @@ func containsCJK(text string) bool {
 	}
 	return false
 }
+
+// TestBuildUserPromptForbidsApproximationSymbols guards the prompt rule added
+// after gpt-5.6-luna repeatedly wrote "(~315.62)" inside the free-text
+// reasoning field. The decision parser rejects any "~" anywhere in the JSON
+// (it exists to block range values like 100~200), so those cycles were
+// discarded entirely despite containing valid, executable decisions.
+func TestBuildUserPromptForbidsApproximationSymbols(t *testing.T) {
+	cfg := store.GetDefaultStrategyConfig("en")
+	// Production trades a hyper_main candidate source, which takes the
+	// canonical (non-vergex) prompt path where the decision-JSON format
+	// rules live. Pin it explicitly so this test keeps exercising the path
+	// the live trader actually uses.
+	cfg.CoinSource.SourceType = "hyper_main"
+	// Vergex fields must be cleared too: any of them being non-zero still
+	// routes the engine to the vergex prompt, which has its own format section.
+	cfg.CoinSource.VergexLimit = 0
+	cfg.CoinSource.VergexMarketType = ""
+	cfg.CoinSource.VergexChain = ""
+	engine := NewStrategyEngine(&cfg)
+	sys := engine.BuildSystemPrompt(1000, "balanced")
+
+	if !strings.Contains(sys, "Never use `~`") {
+		t.Fatal("system prompt must forbid the ~ symbol that the parser rejects")
+	}
+	if !strings.Contains(sys, "reasoning") {
+		t.Fatal("the rule must call out the free-text reasoning field specifically")
+	}
+}
+
+// TestBothPromptPathsForbidApproximationSymbols: the parser's "~" rejection is
+// path-independent, so both prompt variants must state the rule — a strategy
+// switch (e.g. to a vergex candidate source) must not silently reintroduce the
+// discarded-cycle bug that motivated it.
+func TestBothPromptPathsHonorDisableShorts(t *testing.T) {
+	build := func(sourceType string, disableShorts bool) string {
+		cfg := store.GetDefaultStrategyConfig("en")
+		cfg.CoinSource.SourceType = sourceType
+		if sourceType == "hyper_main" {
+			cfg.CoinSource.VergexLimit = 0
+			cfg.CoinSource.VergexMarketType = ""
+			cfg.CoinSource.VergexChain = ""
+		}
+		cfg.RiskControl.DisableShorts = disableShorts
+		return NewStrategyEngine(&cfg).BuildSystemPrompt(1000, "balanced")
+	}
+
+	for _, source := range []string{"hyper_main", "vergex_signal"} {
+		off := build(source, true)
+		if !strings.Contains(off, "SHORT entries are DISABLED") {
+			t.Errorf("%s: disabled prompt must say shorts are disabled", source)
+		}
+		for _, banned := range []string{
+			`"action": "open_short"`,           // example decision
+			"open_long | open_short",           // allowed-action list
+			"SHORT entries require confidence", // short bar
+			"Short entries require 1h RSI7",    // short momentum floor
+			"never default to long-only",       // both-directions rule
+		} {
+			if strings.Contains(off, banned) {
+				t.Errorf("%s: disabled prompt still contains %q", source, banned)
+			}
+		}
+
+		on := build(source, false)
+		if strings.Contains(on, "SHORT entries are DISABLED") {
+			t.Errorf("%s: shorts-enabled prompt must not say shorts are disabled", source)
+		}
+		if !strings.Contains(on, "open_long | open_short") {
+			t.Errorf("%s: shorts-enabled prompt must still offer open_short", source)
+		}
+	}
+}
+
+func TestBothPromptPathsForbidApproximationSymbols(t *testing.T) {
+	legacyCfg := store.GetDefaultStrategyConfig("en")
+	legacyCfg.CoinSource.SourceType = "hyper_main"
+	legacyCfg.CoinSource.VergexLimit = 0
+	legacyCfg.CoinSource.VergexMarketType = ""
+	legacyCfg.CoinSource.VergexChain = ""
+	legacy := NewStrategyEngine(&legacyCfg).BuildSystemPrompt(1000, "balanced")
+	if !strings.Contains(legacy, "Never use `~`") {
+		t.Error("legacy prompt path must forbid the ~ symbol")
+	}
+
+	vergexCfg := store.GetDefaultStrategyConfig("en")
+	vergexCfg.CoinSource.SourceType = "vergex_signal"
+	vergex := NewStrategyEngine(&vergexCfg).BuildSystemPrompt(1000, "balanced")
+	if !strings.Contains(vergex, "Never use `~`") {
+		t.Error("vergex prompt path must forbid the ~ symbol")
+	}
+}

@@ -613,6 +613,7 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 			delete(at.positionFirstSeenTime, key)
 		}
 	}
+	at.prunePeakPnLCache(currentPositionKeys)
 
 	// 3. Use strategy engine to get candidate coins (must have strategy engine)
 	var candidateCoins []kernel.CandidateCoin

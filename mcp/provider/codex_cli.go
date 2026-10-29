@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -228,10 +229,14 @@ func (c *CodexClient) Call(systemPrompt, userPrompt string) (string, error) {
 	// happens to exist from some unrelated cause must never be trusted
 	// just because it's present.
 	if runErr != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return "", fmt.Errorf("codex_cli: exec timed out after %s: %w — stderr: %s", timeout, runErr, truncate(stderr, 4096))
+		failure := "stderr: " + truncate(stderr, 4096)
+		if detail := codexFailureDetail(stdout); detail != "" {
+			failure += " — codex: " + detail
 		}
-		return "", fmt.Errorf("codex_cli: exec failed: %w — stderr: %s", runErr, truncate(stderr, 4096))
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "", fmt.Errorf("codex_cli: exec timed out after %s: %w — %s", timeout, runErr, failure)
+		}
+		return "", fmt.Errorf("codex_cli: exec failed: %w — %s", runErr, failure)
 	}
 	if len(stderr) > 0 {
 		c.Log.Warnf("🔧 [MCP] codex_cli: exit 0 but stderr non-empty: %s", truncate(stderr, 2048))
@@ -262,14 +267,63 @@ func (c *CodexClient) Call(systemPrompt, userPrompt string) (string, error) {
 }
 
 // codexJSONLEvent is the minimal shape needed from a `codex exec --json`
-// event line - only thread/turn-completed events carry other fields, none
-// of which are needed here.
+// event line: reasoning items on success, and the failure reason carried by
+// "error" ({"message"}) and "turn.failed" ({"error":{"message"}}) events.
 type codexJSONLEvent struct {
-	Type string `json:"type"`
+	Type    string `json:"type"`
+	Message string `json:"message"`
+	Error   *struct {
+		Message string `json:"message"`
+	} `json:"error"`
 	Item *struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type    string `json:"type"`
+		Text    string `json:"text"`
+		Message string `json:"message"`
 	} `json:"item"`
+}
+
+// codexFailureDetail extracts why a failed `codex exec --json` run failed.
+// With --json, codex reports API failures (usage limits, auth, network) as
+// "error"/"turn.failed" events on stdout and can leave stderr empty - seen
+// in production as six consecutive cycles failing with a bare "exit status
+// 1 — stderr: " and nothing to diagnose from. Falls back to the tail of
+// stdout when no recognizable event is present, so a change in codex's event
+// format still leaves something to go on.
+func codexFailureDetail(stdout []byte) string {
+	var msgs []string
+	for _, line := range bytes.Split(stdout, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var event codexJSONLEvent
+		if err := json.Unmarshal(line, &event); err != nil {
+			continue
+		}
+		var msg string
+		switch {
+		case event.Type == "error":
+			msg = event.Message
+		case event.Type == "turn.failed" && event.Error != nil:
+			msg = event.Error.Message
+		case event.Type == "item.completed" && event.Item != nil && event.Item.Type == "error":
+			msg = event.Item.Message
+		}
+		// codex emits the same message as both "error" and "turn.failed".
+		if msg = strings.TrimSpace(msg); msg != "" && !slices.Contains(msgs, msg) {
+			msgs = append(msgs, msg)
+		}
+	}
+	if len(msgs) > 0 {
+		return truncate([]byte(strings.Join(msgs, " | ")), 2048)
+	}
+
+	const tailBytes = 1024
+	trimmed := bytes.TrimSpace(stdout)
+	if len(trimmed) > tailBytes {
+		return "...(stdout tail) " + string(trimmed[len(trimmed)-tailBytes:])
+	}
+	return string(trimmed)
 }
 
 // extractReasoningSummary scans a `codex exec --json` stdout stream for

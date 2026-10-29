@@ -106,6 +106,12 @@ func (at *AutoTrader) openThrottleReason(decision kernel.Decision, ctx *kernel.C
 		return ""
 	}
 
+	// Before the per-cycle slot check: a short that can never execute must not
+	// use up the cycle's only open slot and crowd out a long behind it.
+	if decision.Action == "open_short" && at.shortsDisabled() {
+		return shortsDisabledReason
+	}
+
 	if opensQueuedThisCycle >= autopilotMaxOpensPerCycle {
 		return fmt.Sprintf("trade throttle: only %d new position may be opened per cycle", autopilotMaxOpensPerCycle)
 	}

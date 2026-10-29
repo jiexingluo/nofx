@@ -169,7 +169,10 @@ func (t *HyperliquidTrader) reconcilePositions(exchangeID string, positionStore 
 		liveQty[store.LivePositionKey(market.Normalize(symbol), side)] += qty
 	}
 
-	_, err = positionStore.ReconcileOpenPositionsWithLive(exchangeID, liveQty)
+	// 0 grace period: this runs inside SyncOrdersFromHyperliquid *after* fills
+	// are processed, so there is no window where the sync still owes this row
+	// its PnL — unlike a caller reconciling on an independent timer.
+	_, err = positionStore.ReconcileOpenPositionsWithLive(exchangeID, liveQty, 0)
 	return err
 }
 
