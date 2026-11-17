@@ -30,11 +30,20 @@ type NewsItem struct {
 	Important  int
 }
 
-// DefaultNewsFeeds are free crypto news RSS feeds reachable from the server.
+// DefaultNewsFeeds are free crypto news RSS feeds; every one answered from
+// the production server on 2026-11-17. CryptoPanic's free Developer plan was
+// discontinued (~April 2026; paid plans start at $199/month), so breadth here
+// is what gives the review per-coin coverage.
 var DefaultNewsFeeds = []string{
 	"https://cointelegraph.com/rss",
 	"https://decrypt.co/feed",
 	"https://www.coindesk.com/arc/outboundfeeds/rss/",
+	"https://www.theblock.co/rss.xml",
+	"https://cryptoslate.com/feed/",
+	"https://beincrypto.com/feed/",
+	"https://cryptobriefing.com/feed/",
+	"https://www.newsbtc.com/feed/",
+	"https://bitcoinmagazine.com/feed",
 }
 
 var newsHTTPClient = &http.Client{Timeout: 15 * time.Second}
