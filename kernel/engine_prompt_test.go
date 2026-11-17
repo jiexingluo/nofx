@@ -298,6 +298,33 @@ func TestBothPromptPathsHonorDisableShorts(t *testing.T) {
 	}
 }
 
+func TestBothPromptPathsHonorPauseNewEntries(t *testing.T) {
+	for _, source := range []string{"hyper_main", "vergex_signal"} {
+		cfg := store.GetDefaultStrategyConfig("en")
+		cfg.CoinSource.SourceType = source
+		if source == "hyper_main" {
+			cfg.CoinSource.VergexLimit = 0
+			cfg.CoinSource.VergexMarketType = ""
+			cfg.CoinSource.VergexChain = ""
+		}
+		cfg.RiskControl.PauseNewEntries = true
+		cfg.RiskControl.DisableShorts = true // paused wins over the narrower rule
+		prompt := NewStrategyEngine(&cfg).BuildSystemPrompt(1000, "balanced")
+
+		if !strings.Contains(prompt, "NEW ENTRIES ARE PAUSED") {
+			t.Errorf("%s: paused prompt must say new entries are paused", source)
+		}
+		if !strings.Contains(prompt, "`action`: close_long | close_short | hold | wait") {
+			t.Errorf("%s: paused prompt must offer only close/hold/wait", source)
+		}
+		for _, banned := range []string{`"action": "open_long"`, `"action": "open_short"`, "SHORT entries are DISABLED"} {
+			if strings.Contains(prompt, banned) {
+				t.Errorf("%s: paused prompt still contains %q", source, banned)
+			}
+		}
+	}
+}
+
 func TestBothPromptPathsForbidApproximationSymbols(t *testing.T) {
 	legacyCfg := store.GetDefaultStrategyConfig("en")
 	legacyCfg.CoinSource.SourceType = "hyper_main"
@@ -314,5 +341,41 @@ func TestBothPromptPathsForbidApproximationSymbols(t *testing.T) {
 	vergex := NewStrategyEngine(&vergexCfg).BuildSystemPrompt(1000, "balanced")
 	if !strings.Contains(vergex, "Never use `~`") {
 		t.Error("vergex prompt path must forbid the ~ symbol")
+	}
+}
+
+func TestWriteMarketContext(t *testing.T) {
+	var sb strings.Builder
+	writeMarketContext(&sb, &Context{
+		SentimentData: &market.SentimentData{FearGreedIndex: 34, FearGreedLabel: "Fear"},
+		ValuationData: &market.ValuationData{TotalMarketCap: 2.629e12, MarketCapChange24h: -1.2, BTCDominance: 59.3, ETHDominance: 10.6},
+	})
+	got := sb.String()
+	for _, want := range []string{"Fear & Greed Index: 34/100 (Fear)", "total cap $2629B (24h -1.2%) | BTC dominance 59.3% | ETH dominance 10.6%"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("market context missing %q: %s", want, got)
+		}
+	}
+	sb.Reset()
+	writeMarketContext(&sb, &Context{})
+	if sb.Len() != 0 {
+		t.Fatalf("no data must write nothing, got %q", sb.String())
+	}
+}
+
+func TestNofxOSDataIsNotSkippedWhenTradingOnBinance(t *testing.T) {
+	cfg := store.GetDefaultStrategyConfig("en")
+	cfg.CoinSource.SourceType = "hyper_main"
+	e := NewStrategyEngine(&cfg)
+	if !e.usesHyperliquidNativeUniverse() {
+		t.Fatal("unknown exchange: keep the old behaviour (hyper_main is native Hyperliquid)")
+	}
+	e.SetTradingExchange("binance")
+	if e.usesHyperliquidNativeUniverse() {
+		t.Fatal("a hyper_main list traded on Binance must still get NofxOS data")
+	}
+	e.SetTradingExchange("Hyperliquid")
+	if !e.usesHyperliquidNativeUniverse() {
+		t.Fatal("trading on Hyperliquid: NofxOS skip still applies")
 	}
 }

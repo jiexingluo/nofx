@@ -259,6 +259,8 @@ function defaultRisk(risk?: Partial<RiskControlConfig>): RiskControlConfig {
     short_min_confidence: risk?.short_min_confidence,
     short_min_risk_reward_ratio: risk?.short_min_risk_reward_ratio,
     disable_shorts: risk?.disable_shorts,
+    pause_new_entries: risk?.pause_new_entries,
+    daily_trend: risk?.daily_trend,
   }
 }
 

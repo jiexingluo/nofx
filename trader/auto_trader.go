@@ -188,6 +188,7 @@ type AutoTrader struct {
 	startTime              time.Time          // System start time
 	callCount              int                // AI call count
 	positionFirstSeenTime  map[string]int64   // Position first seen time (symbol_side -> timestamp in milliseconds)
+	dailyReviewedClose     int64              // daily trend: last daily close (ms) the AI already reviewed
 	stopMonitorCh          chan struct{}      // Used to stop monitoring goroutine
 	monitorWg              sync.WaitGroup     // Used to wait for monitoring goroutine to finish
 	peakPnLCache           map[string]float64 // Peak profit cache (symbol -> peak P&L percentage)
@@ -390,6 +391,7 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 		claw402Key = config.CustomAPIKey
 	}
 	strategyEngine := kernel.NewStrategyEngine(config.StrategyConfig, claw402Key)
+	strategyEngine.SetTradingExchange(config.Exchange)
 	logger.Infof("✓ [%s] Using strategy engine (strategy configuration loaded)", config.Name)
 
 	return &AutoTrader{
@@ -457,6 +459,7 @@ func (at *AutoTrader) reloadStrategyConfigIfChanged() error {
 	at.config.StrategyConfig = strategyConfig
 	at.config.StrategyConfigRaw = strategy.Config
 	at.strategyEngine = kernel.NewStrategyEngine(strategyConfig, claw402Key)
+	at.strategyEngine.SetTradingExchange(at.config.Exchange)
 	at.logInfof("🔄 Strategy config refreshed from DB: %s", strategy.Name)
 	return nil
 }

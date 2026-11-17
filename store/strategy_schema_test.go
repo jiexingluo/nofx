@@ -181,3 +181,29 @@ func TestStrategyConfigNormalizeProductSchemaForVergexSignalLimits(t *testing.T)
 		}
 	})
 }
+
+// The live strategy row is stored in the old flat layout; the daily trend
+// block must survive both that and a save in the nested ai_config layout.
+func TestDailyTrendConfigRoundTripsBothLayouts(t *testing.T) {
+	flat := []byte(`{"risk_control":{"max_positions":3,"daily_trend":{"enabled":true,"risk_per_trade":0.015,"symbols":["ZECUSDT"]}}}`)
+	var cfg StrategyConfig
+	if err := json.Unmarshal(flat, &cfg); err != nil {
+		t.Fatalf("unmarshal flat layout: %v", err)
+	}
+	dt := cfg.RiskControl.DailyTrend
+	if dt == nil || !dt.Enabled || dt.RiskPerTrade != 0.015 || len(dt.Symbols) != 1 {
+		t.Fatalf("flat layout lost the daily trend block: %+v", dt)
+	}
+
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back StrategyConfig
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatalf("unmarshal nested layout: %v", err)
+	}
+	if got := back.RiskControl.DailyTrend; got == nil || !got.Enabled || got.RiskPerTrade != 0.015 || got.Symbols[0] != "ZECUSDT" {
+		t.Fatalf("nested layout lost the daily trend block: %s", raw)
+	}
+}

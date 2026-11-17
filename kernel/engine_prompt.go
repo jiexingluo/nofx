@@ -31,9 +31,28 @@ const noApproximationSymbolsRule = "**Numbers must be precise single values. Nev
 // the cycle — on a trade that can never be placed.
 const shortsDisabledRule = "- **SHORT entries are DISABLED for this strategy.** Never output `open_short` — it is rejected in code. Use `open_long`, `wait` or `hold`; `close_short` still works for a short you already hold.\n"
 
+// newEntriesPausedRule replaces every entry instruction while the strategy
+// sets RiskControl.PauseNewEntries; the trader rejects opens in code anyway.
+const newEntriesPausedRule = "- **NEW ENTRIES ARE PAUSED for this strategy.** Never output `open_long` or `open_short` — they are rejected in code. Only manage positions already held (`hold`, `close_long`, `close_short`) or `wait`.\n"
+
+// restrictedEntryRule returns the rule that replaces the short-entry bar when
+// entries are restricted, or "" when the normal bar applies.
+func restrictedEntryRule(riskControl store.RiskControlConfig) string {
+	switch {
+	case riskControl.PauseNewEntries:
+		return newEntriesPausedRule
+	case riskControl.DisableShorts:
+		return shortsDisabledRule
+	}
+	return ""
+}
+
 // decisionActions lists the actions the model may output.
 func decisionActions(riskControl store.RiskControlConfig) string {
-	if riskControl.DisableShorts {
+	switch {
+	case riskControl.PauseNewEntries:
+		return "close_long | close_short | hold | wait"
+	case riskControl.DisableShorts:
 		return "open_long | close_long | close_short | hold | wait"
 	}
 	return "open_long | open_short | close_long | close_short | hold | wait"
@@ -406,8 +425,8 @@ func writeVergexHardConstraints(sb *strings.Builder, accountEquity float64, risk
 		sb.WriteString("- If the setup is not strong enough for full size, output `wait`.\n")
 		sb.WriteString("- Do not use available_balance directly as position_size_usd.\n\n")
 	}
-	if riskControl.DisableShorts {
-		sb.WriteString(shortsDisabledRule)
+	if rule := restrictedEntryRule(riskControl); rule != "" {
+		sb.WriteString(rule)
 		sb.WriteString("\n")
 	}
 }
@@ -428,23 +447,29 @@ func writeVergexOutputFormat(sb *strings.Builder, accountEquity float64, riskCon
 	sb.WriteString("# Output Format (Strictly Follow)\n\n")
 	if zh {
 		sb.WriteString("Use XML tags <reasoning> and <decision> to separate concise analysis from the decision JSON.\n\n")
-		if riskControl.DisableShorts {
+		switch {
+		case riskControl.PauseNewEntries:
+			sb.WriteString("New entries are paused for this strategy: never output `open_long` or `open_short`; only manage positions already held, or `wait`.\n\n")
+		case riskControl.DisableShorts:
 			sb.WriteString("Shorts are disabled for this strategy: use `open_long` only for confirmed upside structures and `wait` otherwise; never output `open_short`.\n\n")
-		} else {
+		default:
 			sb.WriteString("Direction must be data-driven: use `open_long` for confirmed upside structures and `open_short` for confirmed downside structures; never default to long-only or short-only behavior.\n\n")
 		}
-		if !singleSymbol && !riskControl.DisableShorts {
+		if !singleSymbol && !riskControl.DisableShorts && !riskControl.PauseNewEntries {
 			sb.WriteString("Evaluate both directions every cycle, but enter a side only when its own signals independently justify it. Never open a position just to balance the book — an unbalanced book beats a forced trade.\n\n")
 		}
 		sb.WriteString(noApproximationSymbolsRule)
 	} else {
 		sb.WriteString("Use XML tags <reasoning> and <decision> to separate concise analysis from the decision JSON.\n\n")
-		if riskControl.DisableShorts {
+		switch {
+		case riskControl.PauseNewEntries:
+			sb.WriteString("New entries are paused for this strategy: never output `open_long` or `open_short`; only manage positions already held, or `wait`.\n\n")
+		case riskControl.DisableShorts:
 			sb.WriteString("Shorts are disabled for this strategy: use `open_long` only for confirmed upside structures and `wait` otherwise; never output `open_short`.\n\n")
-		} else {
+		default:
 			sb.WriteString("Direction must be data-driven: use `open_long` for confirmed upside structures and `open_short` for confirmed downside structures; never default to long-only or short-only behavior.\n\n")
 		}
-		if !singleSymbol && !riskControl.DisableShorts {
+		if !singleSymbol && !riskControl.DisableShorts && !riskControl.PauseNewEntries {
 			sb.WriteString("Evaluate both directions every cycle, but enter a side only when its own signals independently justify it. Never open a position just to balance the book — an unbalanced book beats a forced trade.\n\n")
 		}
 		sb.WriteString(noApproximationSymbolsRule)
@@ -458,7 +483,9 @@ func writeVergexOutputFormat(sb *strings.Builder, accountEquity float64, riskCon
 	sb.WriteString("</reasoning>\n\n")
 	sb.WriteString("<decision>\n")
 	sb.WriteString("```json\n[\n")
-	if singleSymbol {
+	if riskControl.PauseNewEntries {
+		sb.WriteString(fmt.Sprintf("  {\"symbol\": \"%s\", \"action\": \"hold\"}\n", exampleSymbol))
+	} else if singleSymbol {
 		sb.WriteString(fmt.Sprintf("  {\"symbol\": \"%s\", \"action\": \"%s\", \"leverage\": %d, \"position_size_usd\": %.0f, \"stop_loss\": 0, \"take_profit\": 0, \"confidence\": 85, \"risk_usd\": 0}\n", exampleSymbol, exampleOpenAction(riskControl), leverage, positionSize))
 	} else {
 		sb.WriteString(fmt.Sprintf("  {\"symbol\": \"%s\", \"action\": \"open_long\", \"leverage\": %d, \"position_size_usd\": %.0f, \"stop_loss\": 0, \"take_profit\": 0, \"confidence\": 85, \"risk_usd\": 0},\n", exampleSymbol, leverage, positionSize))
@@ -631,8 +658,8 @@ func writeHardConstraints(sb *strings.Builder, accountEquity float64, riskContro
 	sb.WriteString("  If a setup needs a wider stop, SHRINK position_size_usd to fit — do not widen the risk.\n")
 	sb.WriteString("  Positions exceeding this are automatically reduced before the order is placed.\n")
 
-	if riskControl.DisableShorts {
-		sb.WriteString(shortsDisabledRule)
+	if rule := restrictedEntryRule(riskControl); rule != "" {
+		sb.WriteString(rule)
 		sb.WriteString("\n")
 	} else {
 		shortConf := riskControl.ShortMinConfidence
@@ -737,7 +764,14 @@ func writeOutputFormat(sb *strings.Builder, accountEquity, btcEthPosValueRatio f
 	// Build a JSON example using the actual trading symbol when the strategy
 	// is single-symbol. Falls back to the legacy BTC/ETH two-line example
 	// only for multi-symbol strategies that genuinely have BTC/ETH on tap.
-	if singleSymbol {
+	if riskControl.PauseNewEntries {
+		if singleSymbol {
+			sb.WriteString(fmt.Sprintf("  {\"symbol\": \"%s\", \"action\": \"hold\"}\n", primarySymbol))
+		} else {
+			sb.WriteString("  {\"symbol\": \"BTCUSDT\", \"action\": \"hold\"},\n")
+			sb.WriteString("  {\"symbol\": \"ETHUSDT\", \"action\": \"close_long\"}\n")
+		}
+	} else if singleSymbol {
 		lev := riskControl.AltcoinMaxLeverage
 		if riskControl.BTCETHMaxLeverage > lev {
 			lev = riskControl.BTCETHMaxLeverage
@@ -983,6 +1017,8 @@ func (e *StrategyEngine) BuildUserPrompt(ctx *Context) string {
 			btcData.CurrentPrice, btcData.PriceChange1h, btcData.PriceChange4h,
 			btcData.CurrentMACD, btcData.CurrentRSI7))
 	}
+
+	writeMarketContext(&sb, ctx)
 
 	// Account information
 	sb.WriteString(fmt.Sprintf("Account: Equity %.2f | Balance %.2f (%.1f%%) | PnL %+.2f%% | Margin %.1f%% | Positions %d\n\n",
@@ -1468,4 +1504,32 @@ func formatFloatSlice(values []float64) string {
 		strValues[i] = fmt.Sprintf("%.4f", v)
 	}
 	return "[" + strings.Join(strValues, ", ") + "]"
+}
+
+// writeMarketContext renders the market-wide sentiment and valuation the
+// decision weights refer to. Both are fetched every cycle in
+// trader/auto_trader_loop.go, but until 2026-11 only the unused formatter.go
+// path rendered them: the live AI was told "Sentiment 20% | Valuation 25%"
+// with neither in front of it.
+func writeMarketContext(sb *strings.Builder, ctx *Context) {
+	wrote := false
+	if data := ctx.SentimentData; data != nil {
+		if data.FearGreedIndex > 0 {
+			sb.WriteString(fmt.Sprintf("Fear & Greed Index: %d/100 (%s)\n", data.FearGreedIndex, data.FearGreedLabel))
+			wrote = true
+		}
+		if data.PositiveRatio > 0 || data.NegativeRatio > 0 {
+			sb.WriteString(fmt.Sprintf("CryptoRacle sentiment: positive %.1f%% | negative %.1f%% | net %+.3f\n",
+				data.PositiveRatio*100, data.NegativeRatio*100, data.NetSentiment))
+			wrote = true
+		}
+	}
+	if data := ctx.ValuationData; data != nil && data.TotalMarketCap > 0 {
+		sb.WriteString(fmt.Sprintf("Crypto market: total cap $%.0fB (24h %+.1f%%) | BTC dominance %.1f%% | ETH dominance %.1f%%\n",
+			data.TotalMarketCap/1e9, data.MarketCapChange24h, data.BTCDominance, data.ETHDominance))
+		wrote = true
+	}
+	if wrote {
+		sb.WriteString("\n")
+	}
 }

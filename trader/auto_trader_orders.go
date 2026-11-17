@@ -46,6 +46,12 @@ func (at *AutoTrader) executeDecisionWithRecord(decision *kernel.Decision, actio
 func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actionRecord *store.DecisionAction) error {
 	logger.Infof("  📈 Open long: %s", decision.Symbol)
 
+	// [CODE ENFORCED] Pause switch — checked before anything is placed.
+	if err := at.enforceEntriesAllowed(); err != nil {
+		logger.Infof("  ⛔ [RISK CONTROL] %s: %v", decision.Symbol, err)
+		return err
+	}
+
 	// ⚠️ Get current positions for multiple checks
 	positions, err := at.trader.GetPositions()
 	if err != nil {
@@ -203,8 +209,12 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, actionRecord *store.DecisionAction) error {
 	logger.Infof("  📉 Open short: %s", decision.Symbol)
 
-	// [CODE ENFORCED] Raised bar for shorts — checked before anything is
-	// placed, since every short this account has taken has lost.
+	// [CODE ENFORCED] Pause switch, then the raised bar for shorts — both
+	// checked before anything is placed.
+	if err := at.enforceEntriesAllowed(); err != nil {
+		logger.Infof("  ⛔ [RISK CONTROL] %s: %v", decision.Symbol, err)
+		return err
+	}
 	if err := at.enforceShortEntryBar(decision); err != nil {
 		logger.Infof("  ⛔ [RISK CONTROL] %s: %v", decision.Symbol, err)
 		return err

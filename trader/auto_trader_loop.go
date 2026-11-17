@@ -83,11 +83,36 @@ func (at *AutoTrader) runCycle() error {
 	// NOTE: Must be called BEFORE candidate coins check to ensure equity is always recorded
 	at.saveEquitySnapshot(ctx)
 
+	// Rule-based daily trend mode replaces the AI entirely (no candidates,
+	// no AI call) — see auto_trader_daily_trend.go.
+	if cfg, on := at.dailyTrendConfig(); on {
+		return at.runDailyTrendCycle(ctx, record, cfg)
+	}
+
 	// If no candidate coins available, log but do not error
 	if len(ctx.CandidateCoins) == 0 {
 		at.logInfof("ℹ️ No candidate coins available, skipping this cycle")
 		record.Success = true // Not an error, just no candidate coins
 		record.ExecutionLog = append(record.ExecutionLog, "No candidate coins available, cycle skipped")
+		record.AccountState = store.AccountSnapshot{
+			TotalBalance:          ctx.Account.TotalEquity,
+			AvailableBalance:      ctx.Account.AvailableBalance,
+			TotalUnrealizedProfit: ctx.Account.UnrealizedPnL,
+			PositionCount:         ctx.Account.PositionCount,
+			InitialBalance:        at.initialBalance,
+		}
+		if err := at.saveDecision(record); err != nil {
+			at.logWarnf("⚠ Failed to save decision record: %v", err)
+		}
+		return nil
+	}
+
+	// With new entries paused and nothing held, the AI cannot do anything but
+	// wait — skip the call rather than spend Codex quota on it.
+	if at.newEntriesPaused() && len(ctx.Positions) == 0 {
+		at.logInfof("⏸ New entries paused and no open positions, skipping AI call this cycle")
+		record.Success = true
+		record.ExecutionLog = append(record.ExecutionLog, "New entries paused (pause_new_entries) and no open positions, AI call skipped")
 		record.AccountState = store.AccountSnapshot{
 			TotalBalance:          ctx.Account.TotalEquity,
 			AvailableBalance:      ctx.Account.AvailableBalance,

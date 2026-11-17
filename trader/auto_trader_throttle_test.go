@@ -151,6 +151,32 @@ func TestTradeThrottleRefusesDisabledShortBeforeCycleCap(t *testing.T) {
 	}
 }
 
+func TestPauseNewEntriesRefusesEveryOpenButNotCloses(t *testing.T) {
+	cfg := store.GetDefaultStrategyConfig("en")
+	cfg.RiskControl.PauseNewEntries = true
+	at := &AutoTrader{config: AutoTraderConfig{StrategyConfig: &cfg}}
+	ctx := &kernel.Context{}
+
+	for _, action := range []string{"open_long", "open_short"} {
+		if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: action}, ctx, 0); !strings.Contains(reason, "pause_new_entries") {
+			t.Fatalf("%s: expected the throttle to refuse it as paused, got %q", action, reason)
+		}
+	}
+	if err := at.enforceEntriesAllowed(); err == nil || !strings.Contains(err.Error(), "pause_new_entries") {
+		t.Fatalf("expected the order-time check to reject entries, got %v", err)
+	}
+
+	held := throttleContext("xyz:INTC", "long", 2*time.Hour, -2.5)
+	if reason := at.tradeThrottleReason(kernel.Decision{Symbol: "xyz:INTC", Action: "close_long"}, held, 0); reason != "" {
+		t.Fatalf("closing a held position must be unaffected, got %q", reason)
+	}
+
+	cfg.RiskControl.PauseNewEntries = false
+	if err := at.enforceEntriesAllowed(); err != nil {
+		t.Fatalf("entries must be allowed when not paused, got %v", err)
+	}
+}
+
 func TestTradeThrottleBlocksOpensOverCycleCap(t *testing.T) {
 	at := &AutoTrader{}
 	ctx := &kernel.Context{}

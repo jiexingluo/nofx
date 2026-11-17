@@ -1005,6 +1005,84 @@ type RiskControlConfig struct {
 	// exit rules (−14.6 USDT after fees) while longs went 10/11 (+1.7) — even
 	// the raised short bar above had not made shorts pay.
 	DisableShorts bool `json:"disable_shorts,omitempty"`
+
+	// Rejects every new entry, long or short (CODE ENFORCED); the prompt
+	// switches to managing existing positions only, and a cycle with no open
+	// position skips the AI call entirely. Turned on 2026-11-04 after
+	// long-only went 10/21 (−14.2 USDT after fees): the entries showed no
+	// edge, so new trades wait until a large-sample backtest finds one.
+	PauseNewEntries bool `json:"pause_new_entries,omitempty"`
+
+	// Rule-based daily trend following that replaces the AI entirely when
+	// Enabled (CODE ENFORCED, trader/auto_trader_daily_trend.go). It lives
+	// under risk_control because that is the block every strategy save
+	// round-trips. pause_new_entries does not apply to it: that switch gates
+	// AI entries, and the AI is not called in this mode. Started 2026-11-05 as
+	// a small live trial: the only scheme that made money in a 23-coin,
+	// last-12-months backtest (WR 33%, PF 1.61), though largely on market
+	// beta and a handful of +100% trades.
+	DailyTrend *DailyTrendConfig `json:"daily_trend,omitempty"`
+}
+
+// DailyTrendConfig is the rule set the daily trend mode trades. Zero values
+// take the backtested defaults (WithDefaults).
+type DailyTrendConfig struct {
+	Enabled          bool     `json:"enabled"`
+	Symbols          []string `json:"symbols,omitempty"`            // universe, exchange symbols
+	BreakoutDays     int      `json:"breakout_days,omitempty"`      // entry: close > every close of the prior N days
+	TrendEMADays     int      `json:"trend_ema_days,omitempty"`     // entry: close > EMA(N) of daily closes
+	ATRDays          int      `json:"atr_days,omitempty"`           // daily ATR period (Wilder)
+	ATRMultiple      float64  `json:"atr_multiple,omitempty"`       // initial stop and chandelier distance, in ATRs
+	MaxHoldDays      int      `json:"max_hold_days,omitempty"`      // close at market after N days
+	RiskPerTrade     float64  `json:"risk_per_trade,omitempty"`     // equity fraction lost if the initial stop hits
+	MaxPositions     int      `json:"max_positions,omitempty"`      // concurrent positions across all symbols
+	EntryWindowHours int      `json:"entry_window_hours,omitempty"` // enter only within N hours of the daily close
+
+	// AI review of each close's candidates and open positions against market,
+	// sentiment, positioning and news context: "off" (default), "shadow"
+	// (verdicts are recorded but never change a trade — how the AI's value is
+	// measured before it is trusted), or "enforce" (rejected candidates are
+	// skipped, "exit" verdicts close the position).
+	AIReview string `json:"ai_review,omitempty"`
+}
+
+// DefaultDailyTrendSymbols is the 23-coin universe the scheme was tested on.
+var DefaultDailyTrendSymbols = []string{
+	"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT",
+	"LINKUSDT", "SUIUSDT", "HYPEUSDT", "ZECUSDT", "NEARUSDT", "ENAUSDT", "XMRUSDT", "WLDUSDT",
+	"LITUSDT", "UNIUSDT", "ZROUSDT", "XPLUSDT", "VVVUSDT", "PUMPUSDT", "1000PEPEUSDT",
+}
+
+// WithDefaults returns a copy with every zero field set to the tested value.
+func (c DailyTrendConfig) WithDefaults() DailyTrendConfig {
+	if len(c.Symbols) == 0 {
+		c.Symbols = DefaultDailyTrendSymbols
+	}
+	if c.BreakoutDays <= 0 {
+		c.BreakoutDays = 20
+	}
+	if c.TrendEMADays <= 0 {
+		c.TrendEMADays = 50
+	}
+	if c.ATRDays <= 0 {
+		c.ATRDays = 14
+	}
+	if c.ATRMultiple <= 0 {
+		c.ATRMultiple = 3
+	}
+	if c.MaxHoldDays <= 0 {
+		c.MaxHoldDays = 60
+	}
+	if c.RiskPerTrade <= 0 {
+		c.RiskPerTrade = 0.01
+	}
+	if c.MaxPositions <= 0 {
+		c.MaxPositions = 3
+	}
+	if c.EntryWindowHours <= 0 {
+		c.EntryWindowHours = 4
+	}
+	return c
 }
 
 // NewStrategyStore creates a new StrategyStore

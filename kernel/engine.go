@@ -193,6 +193,13 @@ type StrategyEngine struct {
 	nofxosClient       *nofxos.Client
 	vergexClient       *vergex.Client
 	vergexRankingCache map[string]*vergex.SignalRankItem
+	tradingExchange    string // exchange orders go to, when the trader set it
+}
+
+// SetTradingExchange tells the engine which exchange the trader places orders
+// on. A Hyperliquid coin list traded on Binance still gets NofxOS data.
+func (e *StrategyEngine) SetTradingExchange(exchange string) {
+	e.tradingExchange = strings.ToLower(strings.TrimSpace(exchange))
 }
 
 // NewStrategyEngine creates strategy execution engine.
@@ -249,6 +256,12 @@ func NewStrategyEngine(config *store.StrategyConfig, claw402WalletKey ...string)
 
 func (e *StrategyEngine) usesHyperliquidNativeUniverse() bool {
 	if e == nil || e.config == nil {
+		return false
+	}
+	// The coin source only names where the candidate list comes from. A
+	// "hyper_main" list traded on Binance is still Binance perps, and skipping
+	// NofxOS for it starved the live AI of every flow/OI input.
+	if e.tradingExchange != "" && e.tradingExchange != "hyperliquid" {
 		return false
 	}
 	source := e.config.CoinSource

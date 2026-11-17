@@ -85,9 +85,14 @@ func (at *AutoTrader) startDrawdownMonitor() {
 		for {
 			select {
 			case <-ticker.C:
-				at.checkPositionDrawdown()
-				at.updateTrailingStops()
-				// Last: both calls above already fetched positions, so this
+				// The daily trend mode moves its own stops at daily closes;
+				// the AI-era intraday exits (drawdown close, ATR-4h trail,
+				// profit lock) would fight it.
+				if _, daily := at.dailyTrendConfig(); !daily {
+					at.checkPositionDrawdown()
+					at.updateTrailingStops()
+				}
+				// Last: the calls above already fetched positions, so this
 				// one lands inside the exchange client's short position cache
 				// and costs no extra API call in practice.
 				at.reconcileOpenPositions()
@@ -712,6 +717,23 @@ const shortsDisabledReason = "shorts are disabled by this strategy's risk contro
 // shortsDisabled reports whether the strategy forbids opening new shorts.
 func (at *AutoTrader) shortsDisabled() bool {
 	return at.config.StrategyConfig != nil && at.config.StrategyConfig.RiskControl.DisableShorts
+}
+
+const newEntriesPausedReason = "new entries are paused by this strategy's risk control (pause_new_entries)"
+
+// newEntriesPaused reports whether the strategy forbids opening any position.
+func (at *AutoTrader) newEntriesPaused() bool {
+	return at.config.StrategyConfig != nil && at.config.StrategyConfig.RiskControl.PauseNewEntries
+}
+
+// enforceEntriesAllowed rejects any new position while entries are paused
+// (CODE ENFORCED). The throttle already refuses these; this is the last
+// check before an order, for paths that do not go through the throttle.
+func (at *AutoTrader) enforceEntriesAllowed() error {
+	if at.newEntriesPaused() {
+		return fmt.Errorf("entry rejected: %s", newEntriesPausedReason)
+	}
+	return nil
 }
 
 // enforceShortEntryBar rejects a SHORT entry that does not clear the raised

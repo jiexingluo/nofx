@@ -249,4 +249,21 @@ export interface RiskControlConfig {
   short_min_confidence?: number // raised confidence bar for shorts (CODE ENFORCED)
   short_min_risk_reward_ratio?: number // raised R/R bar for shorts (CODE ENFORCED)
   disable_shorts?: boolean // reject every new short (CODE ENFORCED)
+  pause_new_entries?: boolean // reject every new position, long or short (CODE ENFORCED)
+  daily_trend?: DailyTrendConfig // rule-based daily trend mode, replaces the AI (CODE ENFORCED)
+}
+
+// Rule-based daily trend following; zero/absent fields take backend defaults.
+export interface DailyTrendConfig {
+  enabled: boolean
+  symbols?: string[]
+  breakout_days?: number
+  trend_ema_days?: number
+  atr_days?: number
+  atr_multiple?: number
+  max_hold_days?: number
+  risk_per_trade?: number
+  max_positions?: number
+  entry_window_hours?: number
+  ai_review?: 'off' | 'shadow' | 'enforce' // AI review of candidates/positions; shadow = record only
 }

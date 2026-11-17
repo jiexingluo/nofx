@@ -102,6 +102,51 @@ func FetchFearGreedIndex() (*SentimentData, error) {
 	}, nil
 }
 
+// FearGreedPoint is one daily Fear & Greed reading.
+type FearGreedPoint struct {
+	Time  int64 // ms, start of the UTC day
+	Value int
+	Label string
+}
+
+// FetchFearGreedHistory returns the last days daily readings, oldest first.
+func FetchFearGreedHistory(days int) ([]FearGreedPoint, error) {
+	resp, err := sentimentHTTPClient.Get(fmt.Sprintf("https://api.alternative.me/fng/?limit=%d", days))
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch Fear & Greed history: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read Fear & Greed history: %w", err)
+	}
+	return parseFearGreedHistory(body)
+}
+
+func parseFearGreedHistory(body []byte) ([]FearGreedPoint, error) {
+	var fngResp FearGreedResponse
+	if err := json.Unmarshal(body, &fngResp); err != nil {
+		return nil, fmt.Errorf("failed to parse Fear & Greed history: %w", err)
+	}
+	out := make([]FearGreedPoint, 0, len(fngResp.Data))
+	for i := len(fngResp.Data) - 1; i >= 0; i-- { // the API returns newest first
+		d := fngResp.Data[i]
+		var value int
+		var ts int64
+		if _, err := fmt.Sscanf(d.Value, "%d", &value); err != nil {
+			continue
+		}
+		if _, err := fmt.Sscanf(d.Timestamp, "%d", &ts); err != nil {
+			continue
+		}
+		out = append(out, FearGreedPoint{Time: ts * 1000, Value: value, Label: d.ValueClassification})
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no Fear & Greed history in response")
+	}
+	return out, nil
+}
+
 // FetchCryptoRacleSentiment fetches sentiment from CryptoRacle API
 func FetchCryptoRacleSentiment(apiKey string, endpoints []string) (*SentimentData, error) {
 	if apiKey == "" {

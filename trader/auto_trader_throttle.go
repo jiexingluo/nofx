@@ -106,8 +106,11 @@ func (at *AutoTrader) openThrottleReason(decision kernel.Decision, ctx *kernel.C
 		return ""
 	}
 
-	// Before the per-cycle slot check: a short that can never execute must not
-	// use up the cycle's only open slot and crowd out a long behind it.
+	// Before the per-cycle slot check: an open that can never execute must
+	// not use up a slot and crowd out a valid open behind it.
+	if at.newEntriesPaused() {
+		return newEntriesPausedReason
+	}
 	if decision.Action == "open_short" && at.shortsDisabled() {
 		return shortsDisabledReason
 	}
